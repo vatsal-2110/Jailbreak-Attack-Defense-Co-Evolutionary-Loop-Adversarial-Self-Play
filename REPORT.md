@@ -212,6 +212,7 @@ Thus, the project evaluates two complementary objectives:
 - Over-refusal rate: whether the model unnecessarily refuses benign requests.
 
 Overall, the project is essentially an adaptive red-team → defense training → fixed evaluation loop, designed to study whether a defender can become more robust against jailbreaks while retaining useful behaviour.
+
 ---
 
 ## 9. Weaknesses and threats to validity
