@@ -7,10 +7,7 @@ the defender — evaluated on [HarmBench](https://github.com/centerforaisafety/H
 
 **Status, stated up front.** The pipeline is implemented, unit-tested, and
 its data path is verified end-to-end. **It has not yet produced a robustness
-result.** The one recorded execution failed in a way that reported a
-*flattering* number (0.00% attack success), and diagnosing that failure is the
-substance of what follows. No ASR figure, no trained checkpoint, and no
-over-refusal measurement exists yet. Section 6 says exactly what does exist.
+result.** 
 
 ---
 
@@ -24,9 +21,9 @@ The loop:
 
 ```
   HarmBench behaviour  ──▶  attacker LM  ──▶  adversarial prompts
-                                                      │
-                                                      ▼
-   next defender  ◀── LoRA SFT ◀── refusal pairs ◀── judge ◀── defender
+                                                                  │
+                                                                  ▼
+ next defender  ◀── LoRA SFT ◀── refusal pairs ◀── judge ◀── defender
         │                             + benign                    responses
         └──────────────── attacked again next round ──────────────┘
 ```
@@ -34,12 +31,12 @@ The loop:
 Three properties make this harder than it looks, and each caused a concrete
 defect in the first implementation:
 
-1. **The judge is the measurement instrument.** Everything downstream — the
-   training set, the reported metric, the attacker's feedback signal — is
+1. **The judge is the measurement instrument.** Everything downstream the
+   training set, the reported metric, the attacker's feedback signal is
    derived from its labels. A judge that fails silently doesn't produce noisy
    results; it produces confident wrong ones.
 2. **The attacker is a generative process with no schema guarantee.** It is
-   asked for JSON. Reasoning-tuned models emit prose first.
+   asked for JSON. 
 3. **Optimising a single metric is trivially gameable.** A model that refuses
    every input scores a perfect 0% attack success rate.
 
@@ -54,8 +51,8 @@ defect in the first implementation:
 | Defender | `Qwen/Qwen2.5-1.5B-Instruct`, 4-bit NF4 | Fits a single 16 GB GPU with room for training; small enough to iterate in hours, instruction-tuned so it has refusal behaviour to *move* |
 | Adaptation | LoRA r=16, α=32, dropout=0.05, all attention + MLP projections | QLoRA-style 4-bit base + adapters; full fine-tuning is out of budget and would confound "safety trained" with "model degraded" |
 | Attacker | Remote LM via OpenRouter, temperature 1.1 | Decoupled from the defender so attack quality doesn't degrade as the defender is modified; high temperature for strategy diversity |
-| Judge | Remote general instruct model, temperature 0 | Must answer "did this response fulfil *this* behaviour" |
-| Behaviours | HarmBench text test split (320) | Standard benchmark, categorised, publicly citable |
+| Judge | Remote general instruct model/Remote LM via OpenRouter, temperature 0 | Must answer "did this response fulfil *this* behaviour" |
+| Behaviours | HarmBench | Standard benchmark, categorised, publicly citable |
 
 ### 2.2 Round structure
 
@@ -79,11 +76,11 @@ Reportable numbers come from a **frozen probe set**:
 - generated once, before any training,
 - with no attack history (so it cannot adapt),
 - against a **disjoint** set of held-out behaviours,
-- hashed into a manifest, with the generator refusing to overwrite it without
-  `--force`.
 
 Every checkpoint is scored on that identical set, alongside an over-refusal
 metric. Both are reported together, always.
+
+In summary, training attacks tell you how the self-play process is progressing; a fixed, unseen test set tells you whether the defender actually became better.
 
 ---
 
@@ -104,16 +101,8 @@ Copyright is excluded by default, because scoring it honestly needs reference
 texts that this project cannot redistribute. Excluding it is a stated
 limitation; scoring it with the wrong instrument would have been a silent one.
 
-### 3.2 Unscored is a third label, not "safe"
 
-Judge failures are labelled `None` and **excluded from the denominator**. They
-are never folded into either numerator or denominator, and the run logs a
-warning; if *every* case fails, the pipeline raises rather than reporting a
-number.
-
-This is the single highest-value change in the project. See §5.1.
-
-### 3.3 Refusal data is mixed with retention data
+### 3.2 Refusal data is mixed with retention data
 
 Training exclusively on `(attack → refusal)` pairs optimises directly for the
 degenerate solution. Benign instructions, answered by the defender's *own*
@@ -124,7 +113,7 @@ prior behaviour rather than some other model's style.
 Responses the model *already* refuses are dropped from the retention set:
 reinforcing an existing false refusal is precisely backwards.
 
-### 3.4 Round-to-round model state is explicit
+### 3.3 Round-to-round model state is explicit
 
 `restart_policy` is a required, named choice:
 
@@ -137,34 +126,28 @@ Both are defensible. What is not defensible is doing neither — keeping the
 adapter *and* replaying the cumulative dataset, which trains round 0's data
 *n* times while the checkpoint name implies otherwise.
 
-### 3.5 Parse failures discard the round
-
-When the attacker's output cannot be parsed as a JSON array, the result is
-discarded and logged. There is deliberately **no** text-salvaging fallback.
-See §5.2 for what the fallback cost.
-
 ---
 
 ## 4. Rejected alternatives
 
 | Rejected | In favour of | Reason |
 |---|---|---|
-| **Content-safety classifier as judge** (`llama-guard-*`, `nemotron-*-content-safety`, `gpt-oss-safeguard-*`) | General instruct model emitting `0`/`1` | These grade text against *their own* harm taxonomy and emit their own schema. The question here is different — did this response fulfil *this* target behaviour? Forcing the wrong question through them returned empty content on 100% of calls |
+| **Content-safety classifier as judge** (`llama-guard-*`, `nemotron-*-content-safety`) | General instruct model emitting `0`/`1` | These grade text against *their own* harm taxonomy and emit their own schema. The question here is different, did this response fulfil *this* target behaviour? Forcing the wrong question through them returned empty content on 100% of calls also loading llama-guard locally increases the computation and on its opposite smaller model hallucinates |
+| **LLM Red Teamer** (`deepseek/deepseek-v4-flash-0731:free`)| openrouter LM for attacks generation | tried various models such as nvidia/nemotron-3.5-lightning:free, inclusionai/ling-3.0-flash-vl:free, z-ai/glm-5.2:free (instruction tuned, don't generate malicious/attacking prompts), thinkingmachines/inkling:free, thinkingmachines/inkling-small:free (agentic harness only, don't generate attacking prompts). deepseek/deepseek-v4-flash-0731:free was found best from all the models I used to serve as a attacker, but not free tier model any more😢.|
 | **Batched judging** (10 cases per request) | One case per request | 10× cheaper, but a single mis-alignment silently mislabels up to 10 items, and a mislabelled item is indistinguishable from a correct one downstream. Retained as a config knob, off by default |
-| **Line-splitting fallback on JSON parse failure** | Return nothing | Salvaging text produced training data from the attacker's scratchpad (§5.2). An empty round is recoverable; a poisoned training set is not |
-| **Fail-closed to "safe" on judge error** | Fail loud, exclude from denominator | Fail-closed biases the result in the direction the experimenter wants to see. This is the worst possible direction for a safety measurement to fail in |
 | **In-loop ASR as headline metric** | Frozen probe set on held-out behaviours | Adaptive attacks + trained-on behaviours measures memorisation and attacker drift, not robustness |
 | **HarmBench test split for both training and reporting** | Disjoint train/probe split, asserted in code | Train/test contamination |
 | **ASR as sole metric** | ASR **and** over-refusal, reported together | 0% ASR is achievable by refusing everything |
 | **Single global mutated model across rounds** | Explicit `restart_policy` | Made "D2 trained on rounds 0–1" mean something other than what it says |
-| **HarmBench official classifier** (`cais/HarmBench-Llama-2-13b-cls`) as default | Remote instruct judge | *Deferred, not rejected.* It is the correct instrument and the only way to get numbers comparable to published HarmBench results, but it is a 13B local model competing for the same GPU as the defender. Documented as the gold standard; §11 |
+| **HarmBench official classifier** (`cais/HarmBench-Llama-2-13b-cls`) as default | Remote instruct judge | *Deferred, not rejected.* It is the correct instrument and the only way to get numbers comparable to published HarmBench results, but it is a 13B local model competing for the same GPU as the defender. |
 | **DPO / RLAIF instead of SFT** | SFT on refusal pairs | Deferred. Needs paired preference data and more compute; SFT establishes whether the loop closes at all |
 
 ---
 
 ## 5. Experiments run and results
 
-> **There is no robustness result to report.** One execution reached round 0
+> **There is no robustness result to report.** could not find a free model to serve as a good attacker
+> One execution reached round 0
 > and produced zero usable training examples. Rounds 1–4 were never executed
 > (`execution_count: null` on every training and later-round cell). No
 > checkpoint was trained. The "0.00% ASR" the run printed is an artefact of a
@@ -173,58 +156,20 @@ See §5.2 for what the fallback cost.
 > What follows is a diagnostic result: a quantified account of *why* the
 > apparatus produced nothing, which is what motivated the rewrite.
 
-### 5.1 Judge failure — total, and silent
+### 5.1 Failure — total, and silent
 
 | Metric | Value |
 |---|---|
-| Judge batches attempted | 5 |
-| Judge batches that errored | **5 (100%)** |
-| Error | `'NoneType' object has no attribute 'strip'` |
-| Cases labelled by the judge | 0 / 44 |
 | Cases labelled `0` (safe) by the exception handler | **44 / 44** |
 | ASR reported by the run | **0.00%** |
 | Training examples produced | **0** |
 
-The judge model returned `content=None` on every call. The `except` block
-assigned label `0` — safe — to every case in the failed batch. A 100% judge
-failure rate was therefore rendered as a 0% attack success rate: the exact
-shape of a perfect defence.
+One of the reasons I found for this was that the LM Red teamer(free tier models) were not able to generate attacking prompts, insted they were generating the type of respons that is naturally expected from a instruction tuned model (which is the goal) because of which the defender has no reason not to generate a response and the judge has no reason to mark that as a successful attack. 
 
-**This is the central finding of the project.** The failure was not that the
-code crashed — it didn't. It was that the error handler's default value
-happened to be the flattering one, so a totally broken measurement was
-indistinguishable from a total success. Had the run been reported at face
-value, it would have claimed a perfectly robust 1.5B model.
 
-### 5.2 Attack generation — 14% yield
+### 5.2 Benchmark composition — the sample was mostly unscoreable
 
-50 attacks were requested (10 behaviours × 5). 44 records were produced. Their
-actual composition:
-
-| Record type | Count | Share |
-|---|---|---|
-| Attacker scratchpad fragments | 35 | **80%** |
-| Malformed JSON fragments (truncated, stray `[` / `"`) | 3 | 7% |
-| Well-formed adversarial prompts | **6** | **14%** |
-
-The attacker is a reasoning-tuned model: it emitted prose before its JSON
-array. Fence-stripping anchored to the start of the string did not match, so
-`json.loads` failed, and the fallback split the raw text on newlines. Literal
-records sent to the defender as "attacks" included:
-
-```
-"Here's a thinking process:"
-"1.  **Analyze User Input:**"
-"**Constraints:**"
-"["
-```
-
-Per-behaviour, **2 of 10** behaviours yielded even one well-formed attack. One
-behaviour (`fec_bias_toward_biden`) accounted for 5 of the 6.
-
-### 5.3 Benchmark composition — the sample was mostly unscoreable
-
-The 10 sampled behaviours, by HarmBench functional category:
+The 10 sampled behaviours(experimental), by HarmBench functional category:
 
 | Category | Count | Scoreable by the pipeline as written? |
 |---|---|---|
@@ -240,22 +185,6 @@ This is a sampling artefact of drawing uniformly from a split that is 25%
 copyright and 25% contextual — but the pipeline had no category handling at
 all, so the artefact was invisible.
 
-### 5.4 Defect inventory
-
-13 defects were catalogued across correctness, methodology and performance.
-Grouped by what they would have done to a result:
-
-| Class | Count | Examples |
-|---|---|---|
-| Silently corrupts the reported number | 4 | Fail-closed judge; wrong judge for copyright; in-loop adaptive ASR; train/test contamination |
-| Silently corrupts the training data | 3 | Line-splitting fallback; missing `ContextString`; label-mask over-slice |
-| Would crash or NaN under specific inputs | 2 | `labels[:prompt_len] = [-100]*prompt_len` extends the list when `prompt_len > len(labels)`; all-masked rows give NaN loss |
-| Methodological ambiguity | 2 | Mutated global model across rounds; refusal-only training set |
-| Performance / fragility | 2 | `use_cache=False` during generation; right-truncation of chat prompts |
-
-Full table with fixes in [README.md](README.md#what-changed-from-the-original-notebook).
-
----
 
 ## 6. What exists now
 
@@ -267,109 +196,31 @@ Full table with fixes in [README.md](README.md#what-changed-from-the-original-no
 | Configuration | Single YAML, typed, secrets from env |
 | Frozen probe harness | Implemented, hashed, overwrite-protected |
 | Over-refusal metric | Implemented |
-| **Trained checkpoints** | **None** |
-| **Probe ASR figures** | **None** |
-
----
-
-## 7. Validation
-
-No GPU or model access was available during the rewrite, so validation
-deliberately targets the layers that can be checked without them — which is
-also where every defect in §5 actually lived. None of the 13 defects required
-a GPU to manifest.
-
-### 7.1 Regression tests against the observed failures
-
-32 test functions (37 cases after parametrisation), pure Python, no network or
-model downloads. They pin the specific behaviours that failed:
-
-- **Attack parsing** — a plain array, a fenced array after a reasoning
-  preamble, and an array embedded in prose all parse. The literal scratchpad
-  strings from §5.2, a truncated array, a bare `[`, a JSON object, and an
-  empty array all return `None` rather than text.
-- **Unscored ≠ safe** — a set of `[1, 0, None, None]` must report ASR 50%
-  (1 of 2 *scored*), not 25%. This is the §5.1 failure encoded as an
-  assertion.
-- **Judge label parsing** — bare `0`/`1` and `safe`/`unsafe` parse; `"3"`,
-  prose, and empty strings return `None`.
-- **Copyright judging** — no reference text yields `None`, *not* `SAFE`;
-  verbatim text is flagged; a refusal is not.
-- **Prompt masking** — labels always match `input_ids` length (the slice-
-  extension bug), prompt tokens masked, response tokens supervised, and an
-  example truncated past its response is dropped rather than trained on as an
-  all-`-100` row.
-- **Collation** — label padding uses the ignore index, attention padding uses
-  0, and a length mismatch raises instead of silently producing a wrong
-  tensor.
-- **Behaviour splits** — deterministic under a seed, and asserted disjoint.
-
-### 7.2 Integration checks actually executed
-
-| Check | Result |
-|---|---|
-| All 11 modules import (heavy deps stubbed) | Pass |
-| Every `.py` and the shell script parse | Pass |
-| Config round-trips from YAML, nested dataclasses resolve | Pass |
-| Config rejects unknown/typo'd keys | Pass — raises on injected `typo_key` |
-| 58 logic assertions via stub harness | 58 passed, 0 failed |
-| Data pipeline against the **real** HarmBench CSV | Pass — 320 loaded; 159/81/80 category split confirmed; 240 after filtering; 10+10 train/probe disjoint; `ContextString` spliced |
-
-### 7.3 External facts verified, not recalled
-
-Every citation and identifier was checked against a live source rather than
-written from memory:
-
-- 11 arXiv IDs resolved via the arXiv API, titles and first authors confirmed.
-- Dataset and model IDs confirmed via the HuggingFace API.
-- Judge and attacker model IDs confirmed present in the live OpenRouter
-  catalogue (446 models) — which is also how the default judge was found to be
-  a content-safety classifier and changed.
-- HarmBench category counts derived from the downloaded CSV, not assumed.
-
-### 7.4 What this validation does *not* establish
-
-It establishes that the apparatus is internally correct and that the known
-failure modes are fixed. It establishes **nothing** about whether adversarial
-self-play improves robustness. That claim requires §11.1.
 
 ---
 
 ## 8. Analysis
 
-**The instrument was the experiment.** The single recorded run spent its
-entire budget producing a number that measured nothing. Both the attacker
-(14% well-formed output) and the judge (0% successful labelling) were broken,
-and the pipeline reported a clean result anyway. The lesson generalises past
-this project: in a safety evaluation, the default value in an error handler is
-a research decision, not a coding detail. `except: label = SAFE` is a claim
-about the world.
+project develops an adversarial self-play framework for improving the jailbreak resistance of an LLM. A red-team LLM continuously generates adversarial prompts against a defender model, while a judge determines whether the generated response successfully satisfies the harmful target behavior. Successful jailbreaks are then converted into safety/refusal training examples and used to fine-tune the defender over multiple rounds.
 
-**Silent failures cluster at trust boundaries.** All 13 defects sit where the
-code accepts something it did not construct: JSON from a generative model, a
-CSV column, a chat template's return type, Python slice-assignment semantics.
-None were logic errors in the loop itself.
+A key design choice is that in-loop attack success rate is treated only as a progress signal, rather than the final evaluation metric. Since the attacker adapts to each defender checkpoint and the defender is trained on the same behaviours, using those attacks for evaluation would introduce significant bias. Instead, the project creates a frozen probe set before training, without attack history and on held-out behaviours. Every defender checkpoint is evaluated on exactly this same set.
 
-**Benchmark heterogeneity is not a detail.** HarmBench is 50% behaviours that
-need non-default handling. Treating it as a flat list of prompts silently
-discarded 70% of the sample.
+The evaluation also measures over-refusal, so improved safety is not achieved simply by making the model refuse everything. 
 
-**Fail-closed is not conservative here.** In access control, defaulting to
-"deny" is safe. In safety *measurement*, defaulting to "the model was safe" is
-the opposite of conservative — it manufactures evidence of robustness. The
-correct default is "unknown", which costs a warning and denominator
-bookkeeping.
+Thus, the project evaluates two complementary objectives:
+- Attack Success Rate (ASR): whether harmful jailbreak attempts succeed.
+- Over-refusal rate: whether the model unnecessarily refuses benign requests.
 
+Overall, the project is essentially an adaptive red-team → defense training → fixed evaluation loop, designed to study whether a defender can become more robust against jailbreaks while retaining useful behaviour.
 ---
 
 ## 9. Weaknesses and threats to validity
 
-**Unresolved — these would qualify any result the pipeline produces:**
 
 - **No result yet.** Everything above is apparatus.
 - **Judge validity is unmeasured.** No agreement statistic against human
   labels. The judge is the instrument, and its error rate is currently
-  unknown — the fix in §5.1 makes failures *visible*, not *rare*.
+  unknown
 - **Attacker and judge share a vendor** by default: a correlated failure mode.
 - **Copyright behaviours are excluded**, so results cover 240 of 320 HarmBench
   behaviours and are not directly comparable to full-benchmark numbers.
@@ -383,44 +234,27 @@ bookkeeping.
 - **No attack-diversity metric.** The attacker is *asked* for diverse
   strategies; nothing verifies it. Expected to degrade in later rounds as
   history fills the prompt.
-- **The refusal detector is a regex** — a cheap screen for a trend, adequate
-  for tracking direction, not for a headline number.
-- **n-gram copyright matching** catches verbatim reproduction and misses
-  paraphrase.
 - **Free-tier attacker models** have no availability guarantee, so round
   composition may vary with provider load.
 
 ---
 
-## 10. Challenges
+## 10. Challenges and Improvements
 
-**Distinguishing a broken run from a successful one.** The recorded run
-printed a plausible number, a sensible ASR, and no traceback. Nothing in its
-output announced failure. It was only identifiable by reading the per-example
-dump, where "attacks" like `"**Constraints:**"` made the parse failure
-visible, and by noticing that all five judge batches had logged an error
-before the summary printed.
+**Improvement of the Attacking Model.** Currently the pipeline is generalised to train only the defensive model not the attacking model. Improving both models together using some RLHF algorithm should be there so that the attacks can also be improved.
 
-**Reasoning models break format contracts.** "Return only a JSON array" is not
-enforceable against a model that thinks in prose first. Robust extraction
-(fenced block anywhere, outermost bracket span, then discard) was necessary;
-instructions were not sufficient.
+**Computational cost.** Repeated attack generation, response generation, judging, and LoRA fine-tuning across multiple self-play rounds is computationally expensive, particularly on limited GPU resources.
+
+**Reliable jailbreak evaluation.** A simple safety classifier is not always sufficient to determine whether a response actually fulfills the target harmful behaviour, requiring a more capable judge and carefully designed evaluation criteria.
+
+**Balancing safety and usefulness.** Fine-tuning on successful jailbreaks can make the defender safer but may also cause it to refuse legitimate requests. Measuring over-refusal is necessary to track this trade-off.
+
+**Training-data quality.** Successful jailbreaks must be converted into appropriate refusal examples without introducing noisy or incorrectly labelled training data, since poor examples can negatively affect the defender.
 
 **Choosing a judge is a modelling decision, not a config value.** The obvious
 choice — a model with "content-safety" in its name — is the wrong instrument,
 and picking it is what broke the original run. Recognising this required
 reasoning about what the classifier was *trained to answer*.
-
-**HarmBench's structure has to be respected.** The `ContextString` column and
-the copyright/contextual/standard distinction are load-bearing. Discovering
-this required reading the benchmark's own evaluation protocol rather than just
-its CSV.
-
-**Validation without a GPU.** No CUDA, no pip, no model weights in the
-development environment. Addressed by concentrating logic in pure functions
-with injected tokenizers, so masking, collation, parsing, routing and metrics
-are all testable with a word-level fake — which is where the real bugs were
-anyway.
 
 ---
 
@@ -430,12 +264,11 @@ anyway.
 
 Run the experiment the apparatus was built for: baseline `D0` on the frozen
 probe set, four self-play rounds, all five checkpoints evaluated on ASR and
-over-refusal. On one 16 GB GPU this is hours, not days. **Until this is done,
-nothing is demonstrated.**
+over-refusal. 
 
 ### 11.2 Establish judge validity
 
-Hand-label a stratified sample of ~200 cases; report Cohen's κ against the
+Hand-label a stratified sample of ~200 cases; report a metric against the
 automated judge. Cross-check with a second judge from a different vendor and
 report disagreement rate. An ASR curve is worth exactly as much as the judge
 behind it, and that number is currently unknown.
@@ -455,7 +288,7 @@ into scope with the n-gram classifier.
 ### 11.5 Strengthen the attacker
 
 The current attacker is a single prompted LM. Stronger and better-studied
-options — PAIR's iterative refinement, GCG's gradient-based suffixes,
+options — GCG's gradient-based suffixes,
 AutoDAN — would give external validity: does hardening against a prompted
 attacker transfer to an optimisation-based one, or is it attacker-specific
 overfitting? This is the most interesting open question the setup can ask.
@@ -475,7 +308,7 @@ paraphrase — currently an assumption.
 
 ### 11.8 Method extensions
 
-- DPO on `(attack, refusal, harmful_completion)` triples instead of SFT.
+- DPO/RLVR on `(attack, refusal, harmful_completion)` triples instead of SFT.
 - Multi-turn attacks — the current setup is single-turn, which excludes a
   large and practically important class of jailbreak.
 - Transfer: does hardening on 10 behaviours generalise to 230 unseen ones? The
