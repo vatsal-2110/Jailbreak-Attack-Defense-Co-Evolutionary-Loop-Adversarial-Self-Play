@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+.pytest_cache/
+
+# Experiment outputs: attack prompts, model responses and checkpoints.
+# Do not commit these -- they contain model completions to adversarial
+# prompts, and the probe set loses its value once public.
+runs/
+data/*.csv
+data/probe/
+data/copyright_references/
+*.safetensors
+*.bin
+
+# Original executed notebook: contains model responses to adversarial
+# prompts. The stripped copy under notebooks/ is the one that ships.
+/repello-track-2*.ipynb
+
+# Personal session transcript - not repo content, and duplicates REPORT.md.
+# Remove this line if you want it published.
+/session-transcript.pdf

@@ -1,0 +1,90 @@
+# Default self-play experiment.
+# Secrets are read from the environment, never from this file:
+#   OPENROUTER_API_KEY, HF_TOKEN
+
+name: jailbreak_selfplay
+output_root: runs
+num_rounds: 4
+seed: 4
+openrouter_base_url: https://openrouter.ai/api/v1
+
+defender:
+  model_id: Qwen/Qwen2.5-1.5B-Instruct
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: float16
+  bnb_4bit_use_double_quant: true
+  max_seq_length: 1024
+  max_new_tokens: 512
+  generation_batch_size: 8
+  trust_remote_code: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+redteam:
+  model_id: nvidia/nemotron-3.5-lightning:free
+  temperature: 1.1
+  # Reasoning-tuned models spend part of the budget before emitting the JSON
+  # array. Too low a limit truncates the array and the round is discarded.
+  max_tokens: 3000
+  retries: 4
+  attacks_per_behavior: 5
+  history_window: 10
+  request_delay_s: 0.5
+
+judge:
+  # Must be a general instruct model that will emit a bare "0" or "1".
+  #
+  # Do NOT put a content-safety classifier here (llama-guard-*,
+  # nemotron-*-content-safety, gpt-oss-safeguard-*). They grade text against
+  # their own harm taxonomy, not "did this response fulfill THIS target
+  # behavior", and they emit their own schema rather than the requested
+  # label. That mismatch is what silently zeroed the original run.
+  #
+  # Gold standard is the official HarmBench classifier,
+  # cais/HarmBench-Llama-2-13b-cls, run locally. See README "Judging".
+  model_id: meta-llama/llama-3.3-70b-instruct
+  temperature: 0.0
+  max_tokens: 16
+  retries: 4
+  cases_per_request: 1
+  copyright_ngram_n: 20
+  # Point at a directory of <behavior_id>.txt reference texts to score
+  # copyright behaviours. Not distributed with this repo.
+  copyright_reference_dir: null
+
+train:
+  epochs: 2
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+  logging_steps: 5
+  save_strategy: "no"
+  fp16: true
+  optim: paged_adamw_8bit
+  restart_policy: from_base    # from_base | incremental
+  retention_ratio: 1.0
+
+data:
+  harmbench_csv: data/harmbench_behaviors_text_test.csv
+  # "copyright" is excluded by default: without reference texts those
+  # behaviours cannot be scored, and a safety judge always calls them safe.
+  functional_categories:
+    - standard
+    - contextual
+  num_train_behaviors: 10
+  num_probe_behaviors: 10
+  behavior_split_seed: 4
+  retention_dataset: tatsu-lab/alpaca
+  overrefusal_dataset: walledai/XSTest

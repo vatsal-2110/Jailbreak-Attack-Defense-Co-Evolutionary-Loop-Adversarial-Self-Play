@@ -1,0 +1,18 @@
+# Core
+torch>=2.1
+transformers>=4.45
+accelerate>=0.30
+peft>=0.11
+bitsandbytes>=0.43
+datasets>=2.18
+sentencepiece>=0.2
+
+# Remote attacker / judge models (OpenRouter is OpenAI-API compatible)
+openai>=1.30
+
+# Config + utilities
+PyYAML>=6.0
+pandas>=2.0
+
+# Dev
+pytest>=8.0
