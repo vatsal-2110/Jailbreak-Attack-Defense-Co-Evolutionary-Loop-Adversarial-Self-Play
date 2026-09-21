@@ -146,15 +146,12 @@ adapter *and* replaying the cumulative dataset, which trains round 0's data
 
 ## 5. Experiments run and results
 
-> **There is no robustness result to report.** could not find a free model to serve as a good attacker
+> **There is no robustness result to report.** Could not find a free model to serve as a good attacker.
 > One execution reached round 0
-> and produced zero usable training examples. Rounds 1–4 were never executed
-> (`execution_count: null` on every training and later-round cell). No
-> checkpoint was trained. The "0.00% ASR" the run printed is an artefact of a
-> failed judge, not a measurement of defence.
->
-> What follows is a diagnostic result: a quantified account of *why* the
-> apparatus produced nothing, which is what motivated the rewrite.
+> and produced zero usable training examples. Rounds 1–4 were never executed.
+> No checkpoint was trained. The "0.00% ASR" the run printed is an artefact of a
+> failed judge/attacker, not a measurement of defence.
+
 
 ### 5.1 Failure — total, and silent
 
