@@ -140,7 +140,7 @@ adapter *and* replaying the cumulative dataset, which trains round 0's data
 | **ASR as sole metric** | ASR **and** over-refusal, reported together | 0% ASR is achievable by refusing everything |
 | **Single global mutated model across rounds** | Explicit `restart_policy` | Made "D2 trained on rounds 0–1" mean something other than what it says |
 | **HarmBench official classifier** (`cais/HarmBench-Llama-2-13b-cls`) as default | Remote instruct judge | *Deferred, not rejected.* It is the correct instrument and the only way to get numbers comparable to published HarmBench results, but it is a 13B local model competing for the same GPU as the defender. |
-| **DPO / RLAIF instead of SFT** | SFT on refusal pairs | Deferred. Needs paired preference data and more compute; SFT establishes whether the loop closes at all |
+| **DPO / RLHF instead of SFT** | SFT on refusal pairs | Deferred. Needs paired preference data and more compute; SFT establishes whether the loop closes at all |
 
 ---
 
