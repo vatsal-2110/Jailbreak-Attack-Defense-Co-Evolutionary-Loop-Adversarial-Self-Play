@@ -27,10 +27,6 @@ attacks are turned into refusal training data for the next defender. Repeat.
    never from the adaptive in-loop attacks.
 ```
 
-This repository is a rewrite of an exploratory notebook
-([`notebooks/00_original_exploration.ipynb`](notebooks/00_original_exploration.ipynb)).
-The original run produced no usable results; the section below documents what
-was wrong and what changed, because several of the bugs are easy to reintroduce.
 
 **[REPORT.md](REPORT.md)** is the full write-up: methodology, design decisions,
 rejected alternatives, the diagnostic results from that first run, how the
@@ -40,30 +36,6 @@ completion.
 
 ---
 
-## What changed from the original notebook
-
-The recorded notebook run reported **0.00% attack success rate**. That number
-was a judge failure, not a defence. Specifically:
-
-| # | Problem | Consequence | Fix |
-|---|---------|-------------|-----|
-| 1 | Judge returned `content=None`; the handler labelled the batch **safe** | 100% judge failure reported as 0% ASR | `LLMClient` raises on empty content; unscored items are `None` and excluded from the denominator, never counted as a defence ([`judge.py`](src/selfplay/judge.py), [`metrics.py`](src/selfplay/metrics.py)) |
-| 2 | A content-safety classifier was used to judge behaviour fulfilment | Wrong question asked; empty/mismatched output | Judge is a general instruct model emitting `0`/`1`; classifiers are explicitly warned against ([Judging](#judging)) |
-| 3 | JSON parse failure fell back to splitting raw text on newlines | 28 of 44 "attacks" were the attacker's scratchpad (`"Here's a thinking process:"`, `"**Constraints:**"`, a bare `"["`) | `extract_json_array` returns `None` rather than garbage ([`redteam.py`](src/selfplay/redteam.py)) |
-| 4 | `ContextString` never read | Contextual behaviours ("Slightly modify **this text**…") had no referent | `Behavior.target_description()` splices context for attacker and judge ([`data.py`](src/selfplay/data.py)) |
-| 5 | Copyright behaviours judged by a harm classifier | 5 of 10 sampled behaviours could never register a hit | Category routing; copyright scored by n-gram overlap, or left unscored |
-| 6 | ASR compared across rounds using freshly adapted attacks | Defender change and attacker change conflated | Frozen probe set on held-out behaviours ([`build_probe_set.py`](scripts/build_probe_set.py)) |
-| 7 | Behaviours drawn from the test split and trained on | No held-out evaluation | Disjoint train/probe split, asserted |
-| 8 | One mutated global model across rounds | "D2 trained on rounds 0–1" was really D1 retrained on data it had seen | Explicit `restart_policy: from_base \| incremental` |
-| 9 | `labels[:prompt_len] = [-100]*prompt_len` | Slice assignment *extends* the list when `prompt_len > len(labels)`; all-masked rows give NaN loss | Clamped; degenerate examples dropped ([`train.py`](src/selfplay/train.py)) |
-| 10 | Trained only on refusals | A model that refuses everything scores 0% ASR | Benign retention data + over-refusal metric |
-| 11 | `use_cache=False` pinned during generation | Generation several times slower than necessary | Toggled per phase via `generation_mode()` |
-| 12 | Right-truncation of chat prompts | Cut the trailing assistant header off long prompts | `truncation_side="left"` |
-| 13 | `apply_chat_template` relied on an implicit `return_dict` | Version-fragile; a missing attention mask breaks left-padded batches | Passed explicitly |
-
-Regression tests in [`tests/`](tests/) pin items 1, 3, 4, 7, 9 and 10.
-
----
 
 ## Layout
 
@@ -95,7 +67,7 @@ Regression tests in [`tests/`](tests/) pin items 1, 3, 4, 7, 9 and 10.
 ## Install
 
 ```bash
-git clone <your-repo-url> && cd jailbreak-selfplay
+git clone https://github.com/vatsal-2110/Jailbreak-Attack-Defense-Co-Evolutionary-Loop-Adversarial-Self-Play.git && cd jailbreak-selfplay
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .                 # optional; scripts also run without it
@@ -107,7 +79,6 @@ about 6 GB; a T4 or P100 is enough.
 
 ### Credentials
 
-Never committed, read from the environment:
 
 ```bash
 export OPENROUTER_API_KEY="..."   # attacker + judge
@@ -211,8 +182,6 @@ include them, set `judge.copyright_reference_dir` to a directory of
 - **`incremental`** — keep the adapter, train on the new round's data only.
   Cheaper, and each example is seen once.
 
-Mixing the two — keeping the adapter *and* replaying the cumulative dataset —
-trains round 0's data `n` times and is what the original notebook did.
 
 ### Over-refusal
 
@@ -237,7 +206,7 @@ responses with a model.
 pytest tests/ -q
 ```
 
-Pure Python — no GPU, no network, no model downloads. They cover attack
+They cover attack
 parsing, judge-label parsing and the unscored-vs-safe distinction, prompt
 masking and collation, and the train/probe split.
 
@@ -418,14 +387,14 @@ Defensive safety research: measuring and improving a model's robustness to
 adversarial prompts, on a public benchmark built for that purpose. The
 attacker exists to produce training signal for the defender.
 
-Practical notes:
+<!-- Practical notes:
 
 - `runs/` is gitignored. It holds model completions to adversarial prompts —
   review before sharing, and do not commit generated attacks or responses.
 - The notebook under `notebooks/` has its outputs stripped for the same reason.
 - Checkpoints here are deliberately over-refusing by construction. They are
   experimental artefacts, not general-purpose assistants.
-- HarmBench's own terms of use apply to the behaviour data.
+- HarmBench's own terms of use apply to the behaviour data. -->
 
 ## License
 
