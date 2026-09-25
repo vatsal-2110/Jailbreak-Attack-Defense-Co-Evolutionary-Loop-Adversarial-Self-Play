@@ -150,21 +150,29 @@ HarmBench's three functional categories need three different treatments:
 
 | Category | Scored by | Note |
 |---|---|---|
-| `standard` | LLM judge | Self-contained request |
-| `contextual` | LLM judge **plus `ContextString`** | The behaviour is meaningless without it |
+| `standard` | LLM judge or local HarmBench classifier | Self-contained request |
+| `contextual` | same **plus `ContextString`** | The behaviour is meaningless without it |
 | `copyright` | n-gram overlap against a reference text | A harm classifier calls verbatim reproduction "safe" |
 
-**Do not use a content-safety classifier as the judge.** Llama Guard,
+Switch the scorer in `configs/default.yaml` by changing `judge.model_id`:
+
+| `judge.model_id` | Where it runs |
+|---|---|
+| `meta-llama/llama-3.3-70b-instruct` (default) | OpenRouter, reply `0`/`1` |
+| [`cais/HarmBench-Mistral-7b-val-cls`](https://huggingface.co/cais/HarmBench-Mistral-7b-val-cls) | Local Hugging Face, official Yes/No template |
+| [`cais/HarmBench-Llama-2-13b-cls`](https://huggingface.co/cais/HarmBench-Llama-2-13b-cls) | Local Hugging Face, official Yes/No template |
+
+Local classifiers share the GPU with the defender (`judge.load_in_4bit: true` by default). `evaluate.py` unloads the defender before loading the classifier.
+
+**Do not use a generic content-safety classifier as the judge.** Llama Guard,
 `nemotron-*-content-safety` and `gpt-oss-safeguard-*` grade text against their
 own harm taxonomy and emit their own schema. The question here is different —
 *did this response fulfil this specific target behaviour?* — and forcing them
 to answer it is what produced the original notebook's empty responses.
 
-The most faithful option is HarmBench's own classifier,
-[`cais/HarmBench-Llama-2-13b-cls`](https://huggingface.co/cais/HarmBench-Llama-2-13b-cls),
-run locally with the official prompt templates. The OpenRouter default here is
-a convenience; scores from a general instruct judge are not directly comparable
-to published HarmBench numbers.
+A general instruct judge on OpenRouter is a convenience; scores are not
+directly comparable to published HarmBench numbers. The local HarmBench
+classifiers are.
 
 Copyright behaviours are excluded by default (`data.functional_categories`)
 because scoring them needs reference texts, which this repo does not ship. To
@@ -321,7 +329,8 @@ refusals (Bai et al.).
 | Resource | Used for | License |
 |---|---|---|
 | [HarmBench](https://github.com/centerforaisafety/HarmBench) — `harmbench_behaviors_text_test.csv` | Target behaviours | MIT |
-| [`cais/HarmBench-Llama-2-13b-cls`](https://huggingface.co/cais/HarmBench-Llama-2-13b-cls) | Reference judge (optional) | See model card |
+| [`cais/HarmBench-Llama-2-13b-cls`](https://huggingface.co/cais/HarmBench-Llama-2-13b-cls) | Reference judge (optional, local) | See model card |
+| [`cais/HarmBench-Mistral-7b-val-cls`](https://huggingface.co/cais/HarmBench-Mistral-7b-val-cls) | Validation classifier (optional, local) | See model card |
 | [XSTest](https://github.com/paul-rottger/xstest) — `walledai/XSTest` | Over-refusal evaluation | CC-BY-4.0 |
 | [Alpaca](https://huggingface.co/datasets/tatsu-lab/alpaca) — `tatsu-lab/alpaca` | Benign retention prompts | CC-BY-NC-4.0 (non-commercial) |
 
@@ -340,7 +349,8 @@ refusals (Bai et al.).
 ```
 
 - Defender: [`Qwen/Qwen2.5-1.5B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) (Apache-2.0)
-- Attacker / judge: served via [OpenRouter](https://openrouter.ai); see `configs/default.yaml`
+- Attacker: served via [OpenRouter](https://openrouter.ai); see `configs/default.yaml`
+- Judge: OpenRouter instruct model **or** a local HarmBench classifier (`cais/HarmBench-Mistral-7b-val-cls` / `cais/HarmBench-Llama-2-13b-cls`)
 - Llama Guard, referenced as a contrast in [Judging](#judging): Inan et al., arXiv:2312.06674
 
 ### Methods and libraries

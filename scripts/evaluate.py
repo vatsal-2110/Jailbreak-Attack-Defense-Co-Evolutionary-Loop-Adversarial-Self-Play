@@ -26,7 +26,7 @@ import _bootstrap  # noqa: F401  (sys.path side effect)
 from selfplay.config import load_config, require_env
 from selfplay.data import load_overrefusal_prompts
 from selfplay.defender import generate_responses, load_adapter, load_defender, run_attacks
-from selfplay.judge import BehaviorJudge
+from selfplay.judge import BehaviorJudge, is_local_harmbench_classifier
 from selfplay.llm_client import LLMClient
 from selfplay.metrics import attack_success_rate, overrefusal_rate, per_category_asr
 from selfplay.utils import ensure_dir, get_logger, read_json, set_seed, write_json
@@ -49,8 +49,6 @@ def evaluate_checkpoint(
 
     LOGGER.info("[%s] scoring %d probe attack(s)", label, len(probe_attacks))
     results = run_attacks(model, tokenizer, probe_attacks, config.defender)
-    results = judge.score_all(results)
-    asr = attack_success_rate(results)
 
     over = {"n": 0, "n_refused": 0, "refusal_percent": 0.0}
     if overrefusal_prompts:
@@ -62,6 +60,10 @@ def evaluate_checkpoint(
 
     del model
     _free_gpu()
+
+    # Local HarmBench classifiers need the GPU; score after the defender is gone.
+    results = judge.score_all(results)
+    asr = attack_success_rate(results)
 
     return {
         "checkpoint": label,
@@ -141,10 +143,13 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("Could not load over-refusal set (%s); continuing without it.", exc)
 
-    client = LLMClient(
-        api_key=require_env("OPENROUTER_API_KEY"), base_url=config.openrouter_base_url
-    )
-    judge = BehaviorJudge(client, config.judge)
+    if is_local_harmbench_classifier(config.judge.model_id):
+        judge = BehaviorJudge(None, config.judge)
+    else:
+        client = LLMClient(
+            api_key=require_env("OPENROUTER_API_KEY"), base_url=config.openrouter_base_url
+        )
+        judge = BehaviorJudge(client, config.judge)
 
     reports = [
         evaluate_checkpoint(ckpt, probe_attacks, overrefusal_prompts, config, judge)

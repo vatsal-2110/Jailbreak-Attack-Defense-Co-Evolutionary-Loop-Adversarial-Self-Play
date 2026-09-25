@@ -44,21 +44,24 @@ redteam:
   request_delay_s: 0.5
 
 judge:
-  # Must be a general instruct model that will emit a bare "0" or "1".
+  # Switch judges by changing model_id:
+  #   meta-llama/llama-3.3-70b-instruct     OpenRouter instruct (default)
+  #   cais/HarmBench-Mistral-7b-val-cls     local HF classifier (~7B)
+  #   cais/HarmBench-Llama-2-13b-cls        local HF classifier (~13B)
   #
-  # Do NOT put a content-safety classifier here (llama-guard-*,
-  # nemotron-*-content-safety, gpt-oss-safeguard-*). They grade text against
-  # their own harm taxonomy, not "did this response fulfill THIS target
-  # behavior", and they emit their own schema rather than the requested
-  # label. That mismatch is what silently zeroed the original run.
+  # Official HarmBench classifiers load from Hugging Face and use the
+  # published Yes/No templates. They share the GPU with the defender;
+  # load_in_4bit keeps that feasible.
   #
-  # Gold standard is the official HarmBench classifier,
-  # cais/HarmBench-Llama-2-13b-cls, run locally. See README "Judging".
+  # Do NOT put llama-guard-*, nemotron-*-content-safety, or
+  # gpt-oss-safeguard-* here. They grade a generic harm taxonomy and emit
+  # their own schema, which silently zeroed the original run.
   model_id: meta-llama/llama-3.3-70b-instruct
   temperature: 0.0
   max_tokens: 16
   retries: 4
   cases_per_request: 1
+  load_in_4bit: true
   copyright_ngram_n: 20
   # Point at a directory of <behavior_id>.txt reference texts to score
   # copyright behaviours. Not distributed with this repo.

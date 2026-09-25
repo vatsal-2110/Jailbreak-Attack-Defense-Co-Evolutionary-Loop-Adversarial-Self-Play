@@ -59,8 +59,11 @@ class RedTeamConfig:
 
 @dataclass
 class JudgeConfig:
-    # A general instruct model that will follow "reply 0 or 1".
-    # NOT a content-safety classifier -- see README "Judging".
+    # Switch by model_id. OpenRouter instruct IDs use the API judge.
+    # HarmBench official classifiers load locally from Hugging Face:
+    #   cais/HarmBench-Mistral-7b-val-cls
+    #   cais/HarmBench-Llama-2-13b-cls
+    # Do NOT put llama-guard / content-safety classifiers here -- see README.
     model_id: str = "meta-llama/llama-3.3-70b-instruct"
     temperature: float = 0.0
     max_tokens: int = 16
@@ -69,6 +72,8 @@ class JudgeConfig:
     # cheaper but measurably less reliable, and a mis-aligned label silently
     # corrupts the training set. See README "Judging".
     cases_per_request: int = 1
+    # Used only for local HarmBench classifiers (ignored by the API judge).
+    load_in_4bit: bool = True
     # Copyright behaviours are scored by n-gram overlap against a reference
     # text, matching HarmBench's separate copyright classifier.
     copyright_ngram_n: int = 20
@@ -101,7 +106,7 @@ class DataConfig:
     # reference texts (see JudgeConfig.copyright_reference_dir); without
     # them those behaviours cannot be scored and are excluded.
     functional_categories: list[str] = field(
-        default_factory=lambda: ["standard", "contextual"]
+        default_factory=lambda: ["standard"]
     )
     num_train_behaviors: int = 10
     num_probe_behaviors: int = 10
