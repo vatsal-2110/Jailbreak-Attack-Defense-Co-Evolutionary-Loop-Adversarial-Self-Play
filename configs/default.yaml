@@ -85,7 +85,6 @@ data:
   # behaviours cannot be scored, and a safety judge always calls them safe.
   functional_categories:
     - standard
-    - contextual
   num_train_behaviors: 10
   num_probe_behaviors: 10
   behavior_split_seed: 4

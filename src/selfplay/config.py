@@ -52,7 +52,7 @@ class RedTeamConfig:
     temperature: float = 1.1
     max_tokens: int = 3000
     retries: int = 4
-    attacks_per_behavior: int = 5
+    attacks_per_behavior: int = 3
     history_window: int = 10
     request_delay_s: float = 0.5
 
