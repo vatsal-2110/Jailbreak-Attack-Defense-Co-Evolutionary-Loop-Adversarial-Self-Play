@@ -39,7 +39,7 @@ redteam:
   # array. Too low a limit truncates the array and the round is discarded.
   max_tokens: 3000
   retries: 4
-  attacks_per_behavior: 5
+  attacks_per_behavior: 3
   history_window: 10
   request_delay_s: 0.5
 
