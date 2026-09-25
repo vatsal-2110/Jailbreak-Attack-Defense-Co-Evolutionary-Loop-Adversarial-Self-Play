@@ -184,6 +184,12 @@ class RedTeamGenerator:
                 temperature=self._config.temperature,
                 max_tokens=self._config.max_tokens,
                 retries=self._config.retries,
+                extra_body={
+                    "reasoning": {
+                        "effort": "none",    # Turns off reasoning effort
+                        "exclude": True      # Strips any reasoning tokens from response
+                    }
+                },
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.error("Attack generation failed for %s: %s", behavior.behavior_id, exc)
