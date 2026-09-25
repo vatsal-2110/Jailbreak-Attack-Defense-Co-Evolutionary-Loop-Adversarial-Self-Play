@@ -3,9 +3,10 @@
 Iterative red-team / defender self-play for adversarial robustness fine-tuning,
 evaluated on [HarmBench](https://github.com/centerforaisafety/HarmBench).
 
-An attacker model generates adversarial prompts for a target behaviour, a
-defender model answers them, a judge labels each answer, and the successful
-attacks are turned into refusal training data for the next defender. Repeat.
+Jailbreak-R1 generates adversarial prompts for a target behaviour, the
+defender answers them, the HarmBench classifier labels each answer, and
+Qwen3 writes a refusal for every successful attack. Those pairs train the
+next defender. Repeat.
 
 ```
                    ┌──────────────────────────────────────────┐
@@ -13,9 +14,9 @@ attacks are turned into refusal training data for the next defender. Repeat.
                    └───────────────────┬──────────────────────┘
                                        ▼
    ┌──────────────┐   prompts   ┌──────────────┐  responses  ┌──────────────┐
-   │  Attacker    │────────────▶│  Defender    │────────────▶│  Judge       │
-   │  (remote LM) │             │  Qwen2.5 +   │             │  (routed by  │
-   │              │◀────────────│  LoRA        │             │   category)  │
+   │  Attacker    │────────────▶│  Defender    │────────────▶│  Classifier  │
+   │ Jailbreak-R1 │             │  Qwen2.5 +   │             │  HarmBench   │
+   │  (local HF)  │◀────────────│  LoRA        │             │  Mistral cls │
    └──────────────┘  what worked└──────▲───────┘             └──────┬───────┘
                                        │                            │
                                        │  LoRA SFT                  │ label=1
@@ -74,24 +75,20 @@ pip install -e .                 # optional; scripts also run without it
 ./scripts/fetch_harmbench.sh data
 ```
 
-Needs one CUDA GPU. The defaults (Qwen2.5-1.5B, 4-bit NF4, LoRA r=16) fit in
-about 6 GB; a T4 or P100 is enough.
+Needs one CUDA GPU. Attacker, defender, classifier, and refusal teacher load
+from Hugging Face one at a time, in 4-bit. The largest default model is 7B
+(Jailbreak-R1 or the HarmBench Mistral classifier); 16 GB is comfortable.
 
 ### Credentials
 
 
 ```bash
-export OPENROUTER_API_KEY="..."   # attacker + judge
-export HF_TOKEN="..."             # only for gated models
+export HF_TOKEN="..."   # only if a model repo is gated; the defaults are public
 ```
 
-On Kaggle:
-
-```python
-from kaggle_secrets import UserSecretsClient
-import os
-os.environ["OPENROUTER_API_KEY"] = UserSecretsClient().get_secret("OPENROUTER_API_KEY")
-```
+`OPENROUTER_API_KEY` is required only if `judge.model_id` is changed to an
+API instruct model. The default classifier, attacker, and refusal teacher
+are local Hugging Face models.
 
 ---
 
@@ -150,7 +147,7 @@ HarmBench's three functional categories need three different treatments:
 
 | Category | Scored by | Note |
 |---|---|---|
-| `standard` | LLM judge or local HarmBench classifier | Self-contained request |
+| `standard` | HarmBench classifier | Self-contained request |
 | `contextual` | same **plus `ContextString`** | The behaviour is meaningless without it |
 | `copyright` | n-gram overlap against a reference text | A harm classifier calls verbatim reproduction "safe" |
 
@@ -158,11 +155,11 @@ Switch the scorer in `configs/default.yaml` by changing `judge.model_id`:
 
 | `judge.model_id` | Where it runs |
 |---|---|
-| `meta-llama/llama-3.3-70b-instruct` (default) | OpenRouter, reply `0`/`1` |
-| [`cais/HarmBench-Mistral-7b-val-cls`](https://huggingface.co/cais/HarmBench-Mistral-7b-val-cls) | Local Hugging Face, official Yes/No template |
+| [`cais/HarmBench-Mistral-7b-val-cls`](https://huggingface.co/cais/HarmBench-Mistral-7b-val-cls) (default) | Local Hugging Face, official Yes/No template |
 | [`cais/HarmBench-Llama-2-13b-cls`](https://huggingface.co/cais/HarmBench-Llama-2-13b-cls) | Local Hugging Face, official Yes/No template |
+| `meta-llama/llama-3.3-70b-instruct` | OpenRouter, reply `0`/`1` |
 
-Local classifiers share the GPU with the defender (`judge.load_in_4bit: true` by default). `evaluate.py` unloads the defender before loading the classifier.
+The classifier is loaded only while scoring. `run_selfplay.py` and `evaluate.py` unload the defender before loading it, then unload the classifier before the next model.
 
 **Do not use a generic content-safety classifier as the judge.** Llama Guard,
 `nemotron-*-content-safety` and `gpt-oss-safeguard-*` grade text against their
@@ -170,9 +167,10 @@ own harm taxonomy and emit their own schema. The question here is different —
 *did this response fulfil this specific target behaviour?* — and forcing them
 to answer it is what produced the original notebook's empty responses.
 
-A general instruct judge on OpenRouter is a convenience; scores are not
-directly comparable to published HarmBench numbers. The local HarmBench
-classifiers are.
+The default scorer is the local HarmBench classifier, so labels match the
+official Yes/No behaviour test. An OpenRouter instruct judge is still
+available by changing `judge.model_id`, but those scores are not directly
+comparable to published HarmBench numbers.
 
 Copyright behaviours are excluded by default (`data.functional_categories`)
 because scoring them needs reference texts, which this repo does not ship. To
@@ -224,17 +222,16 @@ masking and collation, and the train/probe split.
 
 - **Small scale.** 10 train + 10 probe behaviours from HarmBench's 320 by
   default. Enough for a loop that works; not enough for a claim.
-- **Single attacker, single judge.** No cross-model validation, so judge bias
+- **Single attacker, single classifier.** Jailbreak-R1 writes the prompts,
+  the HarmBench Mistral classifier labels them, and Qwen3-4B-Instruct-2507
+  writes the refusal targets. There is no second scorer, so classifier bias
   is unmeasured. A sample of hand-labelled cases is the cheapest check.
-- **Model-written refusals** are never better than the generator that wrote
-  them, and are only length-filtered.
+- **Model-written refusals** are never better than Qwen3-4B-Instruct-2507.
+  Generations that do not look like a refusal are dropped.
 - **The n-gram copyright check** approximates HarmBench's classifier; it
   catches verbatim reproduction and misses paraphrase.
-- **No attack-diversity metric.** The attacker is *asked* for diverse
-  strategies; nothing verifies it, and it drifts toward repetition in later
-  rounds.
-- **Judge and attacker are the same vendor** by default, which is a shared
-  failure mode. Cross-vendor is safer.
+- **No attack-diversity metric.** Later rounds are told which prompts were
+  already tried; nothing verifies that the new samples are actually different.
 
 ---
 
@@ -329,8 +326,10 @@ refusals (Bai et al.).
 | Resource | Used for | License |
 |---|---|---|
 | [HarmBench](https://github.com/centerforaisafety/HarmBench) — `harmbench_behaviors_text_test.csv` | Target behaviours | MIT |
-| [`cais/HarmBench-Llama-2-13b-cls`](https://huggingface.co/cais/HarmBench-Llama-2-13b-cls) | Reference judge (optional, local) | See model card |
-| [`cais/HarmBench-Mistral-7b-val-cls`](https://huggingface.co/cais/HarmBench-Mistral-7b-val-cls) | Validation classifier (optional, local) | See model card |
+| [`cais/HarmBench-Mistral-7b-val-cls`](https://huggingface.co/cais/HarmBench-Mistral-7b-val-cls) | Classifier for successful attacks | See model card |
+| [`cais/HarmBench-Llama-2-13b-cls`](https://huggingface.co/cais/HarmBench-Llama-2-13b-cls) | Alternate local classifier | See model card |
+| [`yukiyounai/Jailbreak-R1`](https://huggingface.co/yukiyounai/Jailbreak-R1) | Attack generation | Apache-2.0 |
+| [`Qwen/Qwen3-4B-Instruct-2507`](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) | Refusal targets for successful attacks | Apache-2.0 |
 | [XSTest](https://github.com/paul-rottger/xstest) — `walledai/XSTest` | Over-refusal evaluation | CC-BY-4.0 |
 | [Alpaca](https://huggingface.co/datasets/tatsu-lab/alpaca) — `tatsu-lab/alpaca` | Benign retention prompts | CC-BY-NC-4.0 (non-commercial) |
 
@@ -349,8 +348,9 @@ refusals (Bai et al.).
 ```
 
 - Defender: [`Qwen/Qwen2.5-1.5B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) (Apache-2.0)
-- Attacker: served via [OpenRouter](https://openrouter.ai); see `configs/default.yaml`
-- Judge: OpenRouter instruct model **or** a local HarmBench classifier (`cais/HarmBench-Mistral-7b-val-cls` / `cais/HarmBench-Llama-2-13b-cls`)
+- Attacker: [`yukiyounai/Jailbreak-R1`](https://huggingface.co/yukiyounai/Jailbreak-R1) (Apache-2.0), loaded from Hugging Face
+- Classifier: [`cais/HarmBench-Mistral-7b-val-cls`](https://huggingface.co/cais/HarmBench-Mistral-7b-val-cls)
+- Refusal teacher: [`Qwen/Qwen3-4B-Instruct-2507`](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) (Apache-2.0)
 - Llama Guard, referenced as a contrast in [Judging](#judging): Inan et al., arXiv:2312.06674
 
 ### Methods and libraries

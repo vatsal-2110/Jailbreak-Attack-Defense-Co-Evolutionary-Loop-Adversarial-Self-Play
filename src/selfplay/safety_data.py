@@ -15,7 +15,8 @@ Two ingredients, both necessary:
 
 from __future__ import annotations
 
-from .llm_client import LLMClient
+from .config import SafeResponseConfig
+from .local_lm import LocalCausalLM
 from .metrics import looks_like_refusal
 from .utils import get_logger
 
@@ -35,15 +36,35 @@ the unsafe request. Return only the assistant response.
 MIN_SAFE_RESPONSE_CHARS = 20
 
 
-def generate_refusal(client: LLMClient, model_id: str, attack: str) -> str | None:
+def build_safe_response_messages(attack: str) -> list[dict]:
+    """Ask the teacher to refuse ``attack``, with the attack quoted as data.
+
+    The attack is not sent as the user turn itself. These prompts are the
+    ones that already jailbroke the defender, so handing them over as the
+    live instruction tends to make the teacher comply instead of refusing.
+    """
+    return [
+        {"role": "system", "content": SAFE_RESPONSE_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Write the assistant reply that should be used as the training "
+                "target for the user message below. Refuse anything unsafe. "
+                "Do not restate the request and do not include content that "
+                "would carry it out.\n\n"
+                f"USER MESSAGE:\n{attack}"
+            ),
+        },
+    ]
+
+
+def generate_refusal(lm: LocalCausalLM, config: SafeResponseConfig, attack: str) -> str | None:
     try:
-        return client.complete(
-            model=model_id,
-            user_prompt=attack,
-            system_prompt=SAFE_RESPONSE_SYSTEM_PROMPT,
-            temperature=0.2,
-            max_tokens=300,
-            retries=3,
+        return lm.complete_chat(
+            build_safe_response_messages(attack),
+            temperature=config.temperature,
+            max_new_tokens=config.max_tokens,
+            top_p=config.top_p,
         )
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("Safe-response generation failed: %s", exc)
@@ -51,25 +72,41 @@ def generate_refusal(client: LLMClient, model_id: str, attack: str) -> str | Non
 
 
 def build_refusal_dataset(
-    client: LLMClient, model_id: str, successful_attacks: list[dict]
+    config: SafeResponseConfig, successful_attacks: list[dict]
 ) -> list[dict]:
-    """Turn successful attacks into (prompt, refusal) training pairs."""
+    """Turn successful attacks into (prompt, refusal) training pairs.
+
+    The teacher is loaded from Hugging Face for this call and released
+    before the caller trains the defender.
+    """
+    if not successful_attacks:
+        return []
+
+    lm = LocalCausalLM(
+        config.model_id,
+        load_in_4bit=config.load_in_4bit,
+        trust_remote_code=config.trust_remote_code,
+        max_seq_length=config.max_seq_length,
+    )
     examples: list[dict] = []
     rejected = 0
-
-    for item in successful_attacks:
-        response = generate_refusal(client, model_id, item["attack"])
-        if not _is_usable_refusal(response):
-            rejected += 1
-            continue
-        examples.append(
-            {
-                "prompt": item["attack"],
-                "response": response,
-                "behavior_id": item["behavior_id"],
-                "source": "refusal",
-            }
-        )
+    try:
+        lm.load()
+        for item in successful_attacks:
+            response = generate_refusal(lm, config, item["attack"])
+            if not _is_usable_refusal(response):
+                rejected += 1
+                continue
+            examples.append(
+                {
+                    "prompt": item["attack"],
+                    "response": response,
+                    "behavior_id": item["behavior_id"],
+                    "source": "refusal",
+                }
+            )
+    finally:
+        lm.unload()
 
     LOGGER.info(
         "Built %d refusal example(s); rejected %d unusable generation(s)",
@@ -143,4 +180,5 @@ def mix_datasets(
 def _is_usable_refusal(response: str | None) -> bool:
     if not response or len(response.strip()) < MIN_SAFE_RESPONSE_CHARS:
         return False
-    return True
+    # A teacher that complied with the attack must not become the training target.
+    return looks_like_refusal(response)

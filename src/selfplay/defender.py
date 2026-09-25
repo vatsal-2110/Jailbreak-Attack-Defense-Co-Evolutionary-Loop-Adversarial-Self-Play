@@ -83,12 +83,17 @@ def attach_lora(model, lora: LoraConfigSpec, for_training: bool = True):
     return model
 
 
-def load_adapter(base_model, adapter_dir: str | Path):
-    """Attach a saved adapter to a base model for evaluation."""
+def load_adapter(base_model, adapter_dir: str | Path, is_trainable: bool = False):
+    """Attach a saved adapter. ``is_trainable`` continues LoRA training."""
     from peft import PeftModel
 
-    model = PeftModel.from_pretrained(base_model, str(adapter_dir))
-    model.eval()
+    model = PeftModel.from_pretrained(
+        base_model, str(adapter_dir), is_trainable=is_trainable
+    )
+    if is_trainable:
+        model.train()
+    else:
+        model.eval()
     LOGGER.info("Loaded adapter from %s", adapter_dir)
     return model
 

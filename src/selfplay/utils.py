@@ -24,6 +24,20 @@ def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     return logger
 
 
+def free_gpu() -> None:
+    """Release cached CUDA memory after the caller has dropped its model refs."""
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 def set_seed(seed: int) -> None:
     """Seed every RNG we touch. torch/numpy are seeded only if importable."""
     random.seed(seed)

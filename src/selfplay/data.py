@@ -4,7 +4,7 @@ HarmBench (Mazeika et al., 2024) ships three functional categories that are
 *not* interchangeable:
 
 ``standard``
-    Self-contained requests. Scored with an LLM judge.
+    Self-contained requests. Scored with the HarmBench classifier.
 ``contextual``
     The ``Behavior`` text alone is incomplete -- it refers to a passage held
     in the ``ContextString`` column ("Slightly modify this text ..."). The

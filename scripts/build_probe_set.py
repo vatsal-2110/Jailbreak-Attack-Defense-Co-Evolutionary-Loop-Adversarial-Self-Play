@@ -21,9 +21,8 @@ import json
 
 import _bootstrap  # noqa: F401  (sys.path side effect)
 
-from selfplay.config import load_config, require_env
+from selfplay.config import load_config
 from selfplay.data import filter_by_category, load_harmbench, split_behaviors
-from selfplay.llm_client import LLMClient
 from selfplay.redteam import RedTeamGenerator
 from selfplay.utils import ensure_dir, get_logger, set_seed, write_json
 
@@ -67,11 +66,7 @@ def main() -> None:
         seed=config.data.behavior_split_seed,
     )
 
-    client = LLMClient(
-        api_key=require_env("OPENROUTER_API_KEY"),
-        base_url=config.openrouter_base_url,
-    )
-    generator = RedTeamGenerator(client, config.redteam)
+    generator = RedTeamGenerator(config.redteam)
 
     n = args.attacks_per_behavior or config.redteam.attacks_per_behavior
     # round_idx=-1 and no history: the probe set must not adapt to any

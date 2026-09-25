@@ -394,4 +394,4 @@ flowchart LR
   PKG --> HB["HarmBench CSV on disk"]
 ```
 
-Default IDs live in `configs/default.yaml`: defender `Qwen/Qwen2.5-1.5B-Instruct`, attacker `nvidia/nemotron-3.5-lightning:free`, judge `meta-llama/llama-3.3-70b-instruct`.
+Default IDs live in `configs/default.yaml`: defender `Qwen/Qwen2.5-1.5B-Instruct`, attacker `yukiyounai/Jailbreak-R1`, classifier `cais/HarmBench-Mistral-7b-val-cls`, refusal teacher `Qwen/Qwen3-4B-Instruct-2507`. All four load from Hugging Face.

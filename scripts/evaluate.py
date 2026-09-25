@@ -27,9 +27,8 @@ from selfplay.config import load_config, require_env
 from selfplay.data import load_overrefusal_prompts
 from selfplay.defender import generate_responses, load_adapter, load_defender, run_attacks
 from selfplay.judge import BehaviorJudge, is_local_harmbench_classifier
-from selfplay.llm_client import LLMClient
 from selfplay.metrics import attack_success_rate, overrefusal_rate, per_category_asr
-from selfplay.utils import ensure_dir, get_logger, read_json, set_seed, write_json
+from selfplay.utils import ensure_dir, free_gpu, get_logger, read_json, set_seed, write_json
 
 LOGGER = get_logger("evaluate")
 
@@ -41,28 +40,35 @@ def evaluate_checkpoint(
     config,
     judge: BehaviorJudge,
 ) -> dict:
+    # The classifier stays loaded across calls otherwise; drop it before the defender.
+    judge.unload()
+    free_gpu()
+
     model, tokenizer = load_defender(config.defender)
     label = checkpoint
     if checkpoint != "base":
         model = load_adapter(model, checkpoint)
         label = Path(checkpoint).name
 
-    LOGGER.info("[%s] scoring %d probe attack(s)", label, len(probe_attacks))
-    results = run_attacks(model, tokenizer, probe_attacks, config.defender)
+    try:
+        LOGGER.info("[%s] scoring %d probe attack(s)", label, len(probe_attacks))
+        results = run_attacks(model, tokenizer, probe_attacks, config.defender)
 
-    over = {"n": 0, "n_refused": 0, "refusal_percent": 0.0}
-    if overrefusal_prompts:
-        LOGGER.info("[%s] scoring %d benign prompt(s)", label, len(overrefusal_prompts))
-        benign_responses = generate_responses(
-            model, tokenizer, overrefusal_prompts, config.defender
-        )
-        over = overrefusal_rate(benign_responses)
+        over = {"n": 0, "n_refused": 0, "refusal_percent": 0.0}
+        if overrefusal_prompts:
+            LOGGER.info("[%s] scoring %d benign prompt(s)", label, len(overrefusal_prompts))
+            benign_responses = generate_responses(
+                model, tokenizer, overrefusal_prompts, config.defender
+            )
+            over = overrefusal_rate(benign_responses)
+    finally:
+        del model, tokenizer
+        free_gpu()
 
-    del model
-    _free_gpu()
-
-    # Local HarmBench classifiers need the GPU; score after the defender is gone.
-    results = judge.score_all(results)
+    try:
+        results = judge.score_all(results)
+    finally:
+        judge.unload()
     asr = attack_success_rate(results)
 
     return {
@@ -73,19 +79,6 @@ def evaluate_checkpoint(
         "overrefusal": over,
         "raw_results": results,
     }
-
-
-def _free_gpu() -> None:
-    import gc
-
-    gc.collect()
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except ImportError:
-        pass
 
 
 def render_table(reports: list[dict]) -> str:
@@ -146,6 +139,8 @@ def main() -> None:
     if is_local_harmbench_classifier(config.judge.model_id):
         judge = BehaviorJudge(None, config.judge)
     else:
+        from selfplay.llm_client import LLMClient
+
         client = LLMClient(
             api_key=require_env("OPENROUTER_API_KEY"), base_url=config.openrouter_base_url
         )

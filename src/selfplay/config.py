@@ -1,8 +1,8 @@
 """Typed experiment configuration, loaded from YAML.
 
 Secrets are never read from the config file. They come from the
-environment (OPENROUTER_API_KEY, HF_TOKEN) so that configs are safe to
-commit.
+environment (HF_TOKEN, and OPENROUTER_API_KEY only if a judge model id
+is an API model) so that configs are safe to commit.
 """
 
 from __future__ import annotations
@@ -48,23 +48,30 @@ class LoraConfigSpec:
 
 @dataclass
 class RedTeamConfig:
-    model_id: str = "nvidia/nemotron-3.5-lightning:free"
-    temperature: float = 1.1
-    max_tokens: int = 3000
+    # Local Hugging Face attacker. Jailbreak-R1 emits one <think>/<attack>
+    # completion per call; the generator samples ``attacks_per_behavior`` times.
+    model_id: str = "yukiyounai/Jailbreak-R1"
+    temperature: float = 1.0
+    top_p: float = 0.95
+    max_tokens: int = 1024
     retries: int = 4
     attacks_per_behavior: int = 3
     history_window: int = 10
-    request_delay_s: float = 0.5
+    request_delay_s: float = 0.0
+    load_in_4bit: bool = True
+    max_seq_length: int = 2048
+    trust_remote_code: bool = True
 
 
 @dataclass
 class JudgeConfig:
-    # Switch by model_id. OpenRouter instruct IDs use the API judge.
-    # HarmBench official classifiers load locally from Hugging Face:
+    # Switch by model_id. HarmBench official classifiers load locally from
+    # Hugging Face and are the default scorer:
     #   cais/HarmBench-Mistral-7b-val-cls
     #   cais/HarmBench-Llama-2-13b-cls
+    # Any other id is treated as an OpenRouter instruct judge.
     # Do NOT put llama-guard / content-safety classifiers here -- see README.
-    model_id: str = "meta-llama/llama-3.3-70b-instruct"
+    model_id: str = "cais/HarmBench-Mistral-7b-val-cls"
     temperature: float = 0.0
     max_tokens: int = 16
     retries: int = 4
@@ -78,6 +85,19 @@ class JudgeConfig:
     # text, matching HarmBench's separate copyright classifier.
     copyright_ngram_n: int = 20
     copyright_reference_dir: str | None = None
+
+
+@dataclass
+class SafeResponseConfig:
+    """Teacher that writes the refusal target for each successful attack."""
+
+    model_id: str = "Qwen/Qwen3-4B-Instruct-2507"
+    temperature: float = 0.2
+    top_p: float = 0.9
+    max_tokens: int = 384
+    load_in_4bit: bool = True
+    max_seq_length: int = 2048
+    trust_remote_code: bool = True
 
 
 @dataclass
@@ -126,6 +146,7 @@ class ExperimentConfig:
     lora: LoraConfigSpec = field(default_factory=LoraConfigSpec)
     redteam: RedTeamConfig = field(default_factory=RedTeamConfig)
     judge: JudgeConfig = field(default_factory=JudgeConfig)
+    safe_response: SafeResponseConfig = field(default_factory=SafeResponseConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     data: DataConfig = field(default_factory=DataConfig)
 

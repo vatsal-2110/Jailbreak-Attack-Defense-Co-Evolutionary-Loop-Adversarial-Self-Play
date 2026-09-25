@@ -1,6 +1,7 @@
 # Default self-play experiment.
-# Secrets are read from the environment, never from this file:
-#   OPENROUTER_API_KEY, HF_TOKEN
+# Every model below is loaded from Hugging Face, one at a time.
+# HF_TOKEN is only needed for gated repos. OPENROUTER_API_KEY is only
+# needed if judge.model_id is changed to an API instruct model.
 
 name: jailbreak_selfplay
 output_root: runs
@@ -33,30 +34,32 @@ lora:
     - down_proj
 
 redteam:
-  model_id: nvidia/nemotron-3.5-lightning:free
-  temperature: 1.1
-  # Reasoning-tuned models spend part of the budget before emitting the JSON
-  # array. Too low a limit truncates the array and the round is discarded.
-  max_tokens: 3000
+  # Local attacker. One <think>/<attack> sample per call.
+  model_id: yukiyounai/Jailbreak-R1
+  temperature: 1.0
+  top_p: 0.95
+  max_tokens: 4096
   retries: 4
   attacks_per_behavior: 3
   history_window: 10
-  request_delay_s: 0.5
+  request_delay_s: 0.0
+  load_in_4bit: true
+  max_seq_length: 2048
+  trust_remote_code: true
 
 judge:
-  # Switch judges by changing model_id:
-  #   meta-llama/llama-3.3-70b-instruct     OpenRouter instruct (default)
-  #   cais/HarmBench-Mistral-7b-val-cls     local HF classifier (~7B)
-  #   cais/HarmBench-Llama-2-13b-cls        local HF classifier (~13B)
+  # Successful attacks are labelled by the official HarmBench classifier
+  # (Yes/No on the behaviour), loaded from Hugging Face. It is unloaded
+  # before the defender or the refusal teacher is loaded.
   #
-  # Official HarmBench classifiers load from Hugging Face and use the
-  # published Yes/No templates. They share the GPU with the defender;
-  # load_in_4bit keeps that feasible.
+  #   cais/HarmBench-Mistral-7b-val-cls     local HF classifier (~7B, default)
+  #   cais/HarmBench-Llama-2-13b-cls        local HF classifier (~13B)
+  #   meta-llama/llama-3.3-70b-instruct     OpenRouter instruct, reply 0/1
   #
   # Do NOT put llama-guard-*, nemotron-*-content-safety, or
   # gpt-oss-safeguard-* here. They grade a generic harm taxonomy and emit
   # their own schema, which silently zeroed the original run.
-  model_id: meta-llama/llama-3.3-70b-instruct
+  model_id: cais/HarmBench-Mistral-7b-val-cls
   temperature: 0.0
   max_tokens: 16
   retries: 4
@@ -67,11 +70,21 @@ judge:
   # copyright behaviours. Not distributed with this repo.
   copyright_reference_dir: null
 
+safe_response:
+  # Writes the refusal target for each attack the classifier marked successful.
+  model_id: Qwen/Qwen3-4B-Instruct-2507
+  temperature: 0.2
+  top_p: 0.9
+  max_tokens: 384
+  load_in_4bit: true
+  max_seq_length: 2048
+  trust_remote_code: true
+
 train:
   epochs: 2
   per_device_train_batch_size: 2
   gradient_accumulation_steps: 4
-  learning_rate: 2.0e-4
+  learning_rate: 2.0e-5
   logging_steps: 5
   save_strategy: "no"
   fp16: true
@@ -85,8 +98,8 @@ data:
   # behaviours cannot be scored, and a safety judge always calls them safe.
   functional_categories:
     - standard
-  num_train_behaviors: 10
-  num_probe_behaviors: 10
+  num_train_behaviors: 5
+  num_probe_behaviors: 5
   behavior_split_seed: 4
   retention_dataset: tatsu-lab/alpaca
   overrefusal_dataset: walledai/XSTest

@@ -25,11 +25,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .config import JudgeConfig
 from .data import COPYRIGHT
-from .llm_client import LLMClient
 from .utils import get_logger
+
+if TYPE_CHECKING:
+    from .llm_client import LLMClient
 
 LOGGER = get_logger(__name__)
 
@@ -337,6 +340,14 @@ class HarmBenchClsJudge:
             )
         return tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True).strip()
 
+    def unload(self) -> None:
+        """Drop the classifier so the next Hugging Face model can use the GPU."""
+        self._model = None
+        self._tokenizer = None
+        from .utils import free_gpu
+
+        free_gpu()
+
 
 class CopyrightJudge:
     """Flags verbatim reproduction by n-gram overlap with a reference text.
@@ -402,6 +413,11 @@ class BehaviorJudge:
                 )
             self._llm_judge = LLMJudge(client, config)
         self._copyright_judge = CopyrightJudge(config)
+
+    def unload(self) -> None:
+        unload = getattr(self._llm_judge, "unload", None)
+        if callable(unload):
+            unload()
 
     def score_all(self, items: list[dict]) -> list[dict]:
         scored: list[dict] = []
