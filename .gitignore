@@ -5,7 +5,7 @@ venv/
 .env
 *.egg-info/
 .pytest_cache/
-
+*.docx
 # Experiment outputs: attack prompts, model responses and checkpoints.
 # Do not commit these -- they contain model completions to adversarial
 # prompts, and the probe set loses its value once public.

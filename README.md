@@ -1,12 +1,20 @@
 # Jailbreak Self-Play
 
-Iterative red-team / defender self-play for adversarial robustness fine-tuning,
-evaluated on [HarmBench](https://github.com/centerforaisafety/HarmBench).
+A defensive training loop that hardens a small language model against
+adversarial prompts, measured on
+[HarmBench](https://github.com/centerforaisafety/HarmBench).
 
-Jailbreak-R1 generates adversarial prompts for a target behaviour, the
-defender answers them, the HarmBench classifier labels each answer, and
-Qwen3 writes a refusal for every successful attack. Those pairs train the
-next defender. Repeat.
+Each round, Jailbreak-R1 writes prompts for a HarmBench behaviour.
+Qwen2.5-1.5B-Instruct answers them. The HarmBench Mistral classifier marks
+an answer successful when that answer fulfils the behaviour.
+Qwen3-4B-Instruct-2507 writes a refusal for each success. Those pairs,
+mixed with ordinary Alpaca instructions answered by the untrained defender,
+fine-tune a fresh LoRA adapter. The next round attacks that adapter.
+
+All four models load from Hugging Face, one at a time, in 4-bit. The number
+to report is attack success on a frozen set of held-out behaviours, next to
+the refusal rate on safe XSTest prompts. The success rate printed while
+training is a progress signal on adaptive attacks.
 
 ```
                    ┌──────────────────────────────────────────┐
@@ -46,74 +54,158 @@ completion.
 ├── src/selfplay/
 │   ├── config.py                  # typed config; secrets come from env
 │   ├── data.py                    # HarmBench loading, categories, splits
-│   ├── llm_client.py              # OpenRouter client with explicit failures
-│   ├── redteam.py                 # attacker + robust JSON extraction
+│   ├── local_lm.py                # Hugging Face load, generate, unload
+│   ├── llm_client.py              # OpenRouter client, only for an API judge
+│   ├── redteam.py                 # Jailbreak-R1 attack generation
 │   ├── defender.py                # 4-bit load, LoRA, batched generation
-│   ├── judge.py                   # category-routed scoring
+│   ├── judge.py                   # HarmBench classifier scoring
 │   ├── safety_data.py             # refusal pairs + retention pairs
 │   ├── train.py                   # LoRA SFT, prompt masking, collator
 │   ├── metrics.py                 # ASR, per-category ASR, over-refusal
-│   └── utils.py                   # logging, seeding, I/O
+│   └── utils.py                   # logging, seeding, GPU release, I/O
 ├── scripts/
 │   ├── fetch_harmbench.sh         # download behaviour CSVs
-│   ├── build_probe_set.py         # generate + freeze the eval set (run once)
+│   ├── build_probe_set.py         # generate and freeze the eval set
 │   ├── run_selfplay.py            # the training loop
-│   └── evaluate.py                # reportable numbers
+│   ├── evaluate.py                # probe ASR and over-refusal
+│   └── _bootstrap.py              # puts src/ on the path; not run directly
 ├── tests/                         # pure-python, no GPU or network
 └── notebooks/                     # original exploration, outputs stripped
 ```
 
 ---
 
-## Install
+## Setup
+
+Python 3.10 or newer, and one NVIDIA GPU with CUDA. Attacker, defender,
+classifier, and refusal writer load one at a time in 4-bit NF4. The largest
+default model is 7B, so 16 GB is enough. `configs/default.yaml` is the
+experiment: models, split sizes, learning rate, and round count.
+
+The default Hugging Face repos are public. Set `HF_TOKEN` only for a gated
+repo. Set `OPENROUTER_API_KEY` only if you change `judge.model_id` to an
+API instruct model.
+
+### Install
+
+Linux or macOS:
 
 ```bash
-git clone https://github.com/vatsal-2110/Jailbreak-Attack-Defense-Co-Evolutionary-Loop-Adversarial-Self-Play.git && cd jailbreak-selfplay
+git clone https://github.com/vatsal-2110/Jailbreak-Attack-Defense-Co-Evolutionary-Loop-Adversarial-Self-Play.git
+cd jailbreak-selfplay
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-pip install -e .                 # optional; scripts also run without it
+pip install -e .    # optional; the scripts add src/ themselves
+```
+
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/vatsal-2110/Jailbreak-Attack-Defense-Co-Evolutionary-Loop-Adversarial-Self-Play.git
+cd jailbreak-selfplay
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -e .
+```
+
+Optional credentials:
+
+```bash
+export HF_TOKEN="..."          # Linux / macOS
+```
+
+```powershell
+$env:HF_TOKEN = "..."          # PowerShell
+```
+
+### Behaviour data
+
+The loop reads `data/harmbench_behaviors_text_test.csv`. The fetch script
+also saves the validation split.
+
+```bash
 ./scripts/fetch_harmbench.sh data
 ```
 
-Needs one CUDA GPU. Attacker, defender, classifier, and refusal teacher load
-from Hugging Face one at a time, in 4-bit. The largest default model is 7B
-(Jailbreak-R1 or the HarmBench Mistral classifier); 16 GB is comfortable.
+On Windows, Git Bash can run that script. From PowerShell:
 
-### Credentials
-
-
-```bash
-export HF_TOKEN="..."   # only if a model repo is gated; the defaults are public
+```powershell
+New-Item -ItemType Directory -Force -Path data | Out-Null
+$base = "https://raw.githubusercontent.com/centerforaisafety/HarmBench/main/data/behavior_datasets"
+foreach ($split in "val", "test") {
+  curl.exe -fsSL "$base/harmbench_behaviors_text_$split.csv" -o "data/harmbench_behaviors_text_$split.csv"
+}
 ```
 
-`OPENROUTER_API_KEY` is required only if `judge.model_id` is changed to an
-API instruct model. The default classifier, attacker, and refusal teacher
-are local Hugging Face models.
+`configs/default.yaml` keeps the `standard` category only: 20 training
+behaviours and 20 probe behaviours, seed 4. Copyright behaviours stay out
+until `judge.copyright_reference_dir` points at reference texts.
 
 ---
 
-## Quickstart
+## Scripts
+
+| Script | What it does |
+|---|---|
+| `scripts/fetch_harmbench.sh` | Downloads the HarmBench val and test behaviour CSVs into `data/`. |
+| `scripts/build_probe_set.py` | Writes the frozen evaluation attacks once. |
+| `scripts/run_selfplay.py` | Runs attack, score, refusal, and LoRA training. |
+| `scripts/evaluate.py` | Scores `base` and saved adapters on that frozen set. |
+| `scripts/_bootstrap.py` | Adds `src/` to `sys.path`. The other Python scripts import it. |
+
+### `build_probe_set.py`
+
+Generates attacks on the held-out behaviours with no attack history, so every
+later checkpoint is scored on the same prompts.
 
 ```bash
-# 1. Freeze the evaluation set. Run ONCE per experiment.
 python scripts/build_probe_set.py --config configs/default.yaml
+python scripts/build_probe_set.py --config configs/default.yaml --attacks-per-behavior 5
+python scripts/build_probe_set.py --config configs/default.yaml --force
+```
 
-# 2. Baseline, before any training.
-python scripts/evaluate.py --config configs/default.yaml --checkpoints base
+`--attacks-per-behavior` defaults to `redteam.attacks_per_behavior` (5).
+`--force` overwrites an existing set and makes earlier scores incomparable.
 
-# 3. Self-play.
+Writes `runs/jailbreak_selfplay/probe/probe_attacks.json` and
+`probe_manifest.json` (SHA-256, behaviour ids, attacker id).
+
+### `run_selfplay.py`
+
+```bash
 python scripts/run_selfplay.py --config configs/default.yaml
+python scripts/run_selfplay.py --config configs/default.yaml --rounds 2
+```
 
-# 4. Reportable numbers for every checkpoint.
+`--rounds` overrides `num_rounds`. With the default of 4, rounds 0–4 generate
+and score. Training runs after rounds 0–3 and saves
+`runs/jailbreak_selfplay/checkpoints/D1` through `D4` when that round has
+usable refusals. Round 0 is the base model. The last round does not train.
+A round with no classifier success, or with every Qwen3 refusal rejected,
+keeps the previous adapter and does not write a new checkpoint.
+
+Also writes `behavior_split.json`, `retention_examples.json`,
+`rounds/round_<n>_attacks.json`, `round_<n>_results.json`,
+`round_<n>_summary.json`, and `all_results.json` under
+`runs/jailbreak_selfplay/`.
+
+### `evaluate.py`
+
+```bash
+python scripts/evaluate.py --config configs/default.yaml --checkpoints base
 python scripts/evaluate.py --config configs/default.yaml \
     --checkpoints base \
         runs/jailbreak_selfplay/checkpoints/D1 \
-        runs/jailbreak_selfplay/checkpoints/D2 \
-        runs/jailbreak_selfplay/checkpoints/D3 \
         runs/jailbreak_selfplay/checkpoints/D4
 ```
 
-Step 4 writes `eval_table.md`:
+`--checkpoints` is required. `base` is the untrained defender; any other
+value is an adapter directory. `--probe` overrides the default
+`probe_attacks.json`. `--skip-overrefusal` drops the XSTest column.
+`--out` sets the output directory (default `runs/jailbreak_selfplay/eval/`).
+
+Writes `eval_reports.json` and `eval_table.md`:
 
 ```
 | Checkpoint | Probe ASR % | scored/total | Over-refusal % |
@@ -122,8 +214,37 @@ Step 4 writes `eval_table.md`:
 | D1   | ... | ... | ... |
 ```
 
-**Read both columns.** A checkpoint improved only if probe ASR fell *and*
-over-refusal did not rise to meet it.
+A checkpoint improved when probe ASR fell and over-refusal did not rise to
+meet it.
+
+---
+
+## Run
+
+Do these in order. Build the probe set before the first evaluation, and do
+not regenerate it while comparing checkpoints.
+
+```bash
+# 1. Freeze the evaluation set. Once per experiment.
+python scripts/build_probe_set.py --config configs/default.yaml
+
+# 2. Baseline, before any training.
+python scripts/evaluate.py --config configs/default.yaml --checkpoints base
+
+# 3. Self-play. Prints in-loop ASR only; that is not the result.
+python scripts/run_selfplay.py --config configs/default.yaml
+
+# 4. Reportable numbers for every checkpoint that was saved.
+python scripts/evaluate.py --config configs/default.yaml \
+    --checkpoints base \
+        runs/jailbreak_selfplay/checkpoints/D1 \
+        runs/jailbreak_selfplay/checkpoints/D2 \
+        runs/jailbreak_selfplay/checkpoints/D3 \
+        runs/jailbreak_selfplay/checkpoints/D4
+```
+
+Step 4 is the comparison to keep. If a training round was skipped, leave
+that `D*` path out of `--checkpoints`.
 
 ---
 
@@ -220,8 +341,8 @@ masking and collation, and the train/probe split.
 
 ## Known limitations
 
-- **Small scale.** 10 train + 10 probe behaviours from HarmBench's 320 by
-  default. Enough for a loop that works; not enough for a claim.
+- **Small scale.** 20 train + 20 probe `standard` behaviours by default.
+  Enough for a loop that runs; not enough for a claim.
 - **Single attacker, single classifier.** Jailbreak-R1 writes the prompts,
   the HarmBench Mistral classifier labels them, and Qwen3-4B-Instruct-2507
   writes the refusal targets. There is no second scorer, so classifier bias
