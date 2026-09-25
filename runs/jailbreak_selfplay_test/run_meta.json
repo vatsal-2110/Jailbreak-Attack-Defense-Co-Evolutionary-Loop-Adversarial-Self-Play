@@ -1,0 +1,4 @@
+{
+  "config": "configs/default.yaml",
+  "num_rounds": 4
+}

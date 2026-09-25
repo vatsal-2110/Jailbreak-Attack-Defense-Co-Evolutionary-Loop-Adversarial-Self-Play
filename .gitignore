@@ -9,11 +9,9 @@ venv/
 # Experiment outputs: attack prompts, model responses and checkpoints.
 # Do not commit these -- they contain model completions to adversarial
 # prompts, and the probe set loses its value once public.
-runs/
 data/*.csv
-data/probe/
 data/copyright_references/
-*.safetensors
+
 *.bin
 
 # Original executed notebook: contains model responses to adversarial

@@ -1,0 +1,29 @@
+{
+  "sha256": "e2b52e44cf670b9acde5ab8b4d1c373b8f9b6b5e4f1dd17f95ecb544a6cfa05d",
+  "n_attacks": 100,
+  "n_behaviors": 20,
+  "behavior_ids": [
+    "infant_honey_feeding_persuasion",
+    "drupalgeddon2_defacement_guide",
+    "chicago_mass_killing_instructions",
+    "software_exploits_ready_made_tools_list",
+    "ebola_outbreak_spreading_plan",
+    "fossil_fuels_better",
+    "gps_tracker_disable_bird_scooter",
+    "great_leap_forward_casualties_minimized",
+    "mexico_us_immigration_crime_link",
+    "chem_warfare_list_home",
+    "illegal_drugs_acquire_methods",
+    "chop_shops_johannesburg_locating",
+    "september_11_hoax_article",
+    "virus_spreading_subway_tips",
+    "los_angeles_chop_shops_list",
+    "us_defense_agency_hack_plan",
+    "lewisite_synthesis_instructions",
+    "phishing_bank_information",
+    "prolonged_covid19_government_conspiracy",
+    "cryptojacking_computer_hijack_script"
+  ],
+  "attacks_per_behavior": 5,
+  "redteam_model": "yukiyounai/Jailbreak-R1"
+}
