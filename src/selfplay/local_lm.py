@@ -6,9 +6,13 @@ together. Each caller loads one model, uses it, and calls ``unload``.
 
 from __future__ import annotations
 
-from .utils import free_gpu, get_logger
+from .utils import configure_cpu_parallelism, free_gpu, get_logger
 
 LOGGER = get_logger(__name__)
+
+# Independent completions share one padded forward. Chunked so a long
+# attacker sample cannot exhaust the GPU; each prompt is still decoded alone.
+_GENERATE_CHUNK = 8
 
 
 class LocalCausalLM:
@@ -31,6 +35,7 @@ class LocalCausalLM:
         if self._model is not None:
             return
 
+        configure_cpu_parallelism()
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
@@ -77,23 +82,91 @@ class LocalCausalLM:
     ) -> str:
         """Chat-template generation. The template already includes special tokens."""
         self.load()
+        return self._generate(
+            self._render_chat(messages),
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+            top_p=top_p,
+        )
+
+    def complete_chat_batch(
+        self,
+        conversations: list[list[dict]],
+        *,
+        temperature: float,
+        max_new_tokens: int,
+        top_p: float = 0.95,
+    ) -> list[str | None]:
+        """Same decoding settings as ``complete_chat``, one string per conversation.
+
+        Order matches the input. A failed row is ``None`` so one bad prompt
+        does not drop the rest. A single conversation uses the unbatched path.
+        """
+        if not conversations:
+            return []
+        self.load()
+        from .utils import thread_map
+
+        prompts = thread_map(self._render_chat, conversations)
+        outputs: list[str | None] = []
+        for start in range(0, len(prompts), _GENERATE_CHUNK):
+            chunk = prompts[start : start + _GENERATE_CHUNK]
+            if len(chunk) == 1:
+                try:
+                    outputs.append(
+                        self._generate(
+                            chunk[0],
+                            temperature=temperature,
+                            max_new_tokens=max_new_tokens,
+                            top_p=top_p,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.warning("Generation failed: %s", exc)
+                    outputs.append(None)
+                continue
+            try:
+                outputs.extend(
+                    generate_texts(
+                        self._model,
+                        self._tokenizer,
+                        chunk,
+                        max_new_tokens=max_new_tokens,
+                        max_length=self._max_seq_length,
+                        temperature=temperature,
+                        top_p=top_p,
+                        add_special_tokens=False,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Batched generation failed (%s); retrying one by one.", exc)
+                for prompt in chunk:
+                    try:
+                        outputs.append(
+                            self._generate(
+                                prompt,
+                                temperature=temperature,
+                                max_new_tokens=max_new_tokens,
+                                top_p=top_p,
+                            )
+                        )
+                    except Exception as item_exc:  # noqa: BLE001
+                        LOGGER.warning("Generation failed: %s", item_exc)
+                        outputs.append(None)
+        return outputs
+
+    def _render_chat(self, messages: list[dict]) -> str:
         tokenizer = self._tokenizer
         template_kwargs = {
             "tokenize": False,
             "add_generation_prompt": True,
         }
         try:
-            prompt = tokenizer.apply_chat_template(
+            return tokenizer.apply_chat_template(
                 messages, enable_thinking=False, **template_kwargs
             )
         except TypeError:
-            prompt = tokenizer.apply_chat_template(messages, **template_kwargs)
-        return self._generate(
-            prompt,
-            temperature=temperature,
-            max_new_tokens=max_new_tokens,
-            top_p=top_p,
-        )
+            return tokenizer.apply_chat_template(messages, **template_kwargs)
 
     def _generate(
         self,
@@ -103,31 +176,71 @@ class LocalCausalLM:
         max_new_tokens: int,
         top_p: float,
     ) -> str:
-        import torch
-
-        tokenizer = self._tokenizer
-        model = self._model
-        inputs = tokenizer(
-            prompt,
-            return_tensors="pt",
-            add_special_tokens=False,
-            truncation=True,
+        texts = generate_texts(
+            self._model,
+            self._tokenizer,
+            [prompt],
+            max_new_tokens=max_new_tokens,
             max_length=self._max_seq_length,
+            temperature=temperature,
+            top_p=top_p,
+            add_special_tokens=False,
         )
-        device = next(model.parameters()).device
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        input_length = inputs["input_ids"].shape[1]
+        return texts[0]
 
-        do_sample = temperature > 0
-        gen_kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "do_sample": do_sample,
-            "pad_token_id": tokenizer.pad_token_id,
-        }
-        if do_sample:
-            gen_kwargs["temperature"] = temperature
-            gen_kwargs["top_p"] = top_p
 
-        with torch.inference_mode():
-            outputs = model.generate(**inputs, **gen_kwargs)
-        return tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True).strip()
+def generate_texts(
+    model,
+    tokenizer,
+    prompts: list[str],
+    *,
+    max_new_tokens: int,
+    max_length: int,
+    temperature: float = 0.0,
+    top_p: float = 1.0,
+    add_special_tokens: bool = True,
+) -> list[str]:
+    """Greedy or sampled generation. Several prompts are one padded batch.
+
+    Left padding keeps each row's new tokens aligned, matching single-prompt
+    decoding. One prompt is not padded.
+    """
+    import torch
+
+    if not prompts:
+        return []
+
+    old_padding = tokenizer.padding_side
+    tokenizer.padding_side = "left" if len(prompts) > 1 else old_padding
+    try:
+        inputs = tokenizer(
+            prompts,
+            return_tensors="pt",
+            add_special_tokens=add_special_tokens,
+            truncation=True,
+            max_length=max_length,
+            padding=len(prompts) > 1,
+        )
+    finally:
+        tokenizer.padding_side = old_padding
+
+    device = next(model.parameters()).device
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    input_length = inputs["input_ids"].shape[1]
+
+    do_sample = temperature > 0
+    gen_kwargs = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": do_sample,
+        "pad_token_id": tokenizer.pad_token_id,
+    }
+    if do_sample:
+        gen_kwargs["temperature"] = temperature
+        gen_kwargs["top_p"] = top_p
+
+    with torch.inference_mode():
+        outputs = model.generate(**inputs, **gen_kwargs)
+    return [
+        tokenizer.decode(row[input_length:], skip_special_tokens=True).strip()
+        for row in outputs
+    ]

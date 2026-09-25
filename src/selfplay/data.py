@@ -26,7 +26,7 @@ import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .utils import get_logger
+from .utils import get_logger, process_map
 
 LOGGER = get_logger(__name__)
 
@@ -189,17 +189,13 @@ def load_retention_prompts(dataset_id: str, n: int, seed: int) -> list[str]:
     ds = load_dataset(dataset_id, split="train")
     column = _first_present(ds.column_names, ["instruction", "prompt", "text"])
     rows = ds.shuffle(seed=seed).select(range(min(n * 3, len(ds))))
-    prompts: list[str] = []
-    for row in rows:
-        # Alpaca rows with a non-empty `input` need it appended to make sense.
-        text = (row[column] or "").strip()
-        extra = (row.get("input") or "").strip() if "input" in ds.column_names else ""
-        if extra:
-            text = f"{text}\n\n{extra}"
-        if text:
-            prompts.append(text)
-        if len(prompts) >= n:
-            break
+    has_input = "input" in ds.column_names
+    # Same selection as the sequential scan: first n non-empty prompts, in order.
+    formatted = process_map(
+        _format_retention_row,
+        [(row[column], row.get("input") if has_input else "") for row in rows],
+    )
+    prompts = [text for text in formatted if text][:n]
     LOGGER.info("Loaded %d retention prompts from %s", len(prompts), dataset_id)
     return prompts
 
@@ -222,19 +218,41 @@ def load_overrefusal_prompts(dataset_id: str, n: int | None = None) -> list[str]
     label_col = _first_present(
         ds.column_names, ["label", "type", "category"], required=False
     )
-    prompts = []
-    for row in ds:
-        # Keep only the safe half of the suite; the contrast set is genuinely
-        # unsafe and refusing those is correct behaviour.
-        if label_col and "unsafe" in str(row[label_col]).lower():
-            continue
-        text = (row[column] or "").strip()
-        if text:
-            prompts.append(text)
+    # Keep only the safe half of the suite; the contrast set is genuinely
+    # unsafe and refusing those is correct behaviour. Order is unchanged.
+    formatted = process_map(
+        _format_overrefusal_row,
+        [
+            (
+                str(row[label_col]) if label_col else "",
+                row[column],
+            )
+            for row in ds
+        ],
+    )
+    prompts = [text for text in formatted if text]
     if n is not None:
         prompts = prompts[:n]
     LOGGER.info("Loaded %d over-refusal prompts from %s", len(prompts), dataset_id)
     return prompts
+
+
+def _format_retention_row(pair: tuple) -> str | None:
+    text, extra = pair
+    text = (text or "").strip()
+    extra = (extra or "").strip()
+    # Alpaca rows with a non-empty `input` need it appended to make sense.
+    if extra:
+        text = f"{text}\n\n{extra}"
+    return text or None
+
+
+def _format_overrefusal_row(pair: tuple) -> str | None:
+    label, text = pair
+    if label and "unsafe" in str(label).lower():
+        return None
+    text = (text or "").strip()
+    return text or None
 
 
 def _first_present(

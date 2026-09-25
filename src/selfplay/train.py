@@ -22,7 +22,7 @@ import torch
 from transformers import Trainer, TrainingArguments
 
 from .config import TrainConfig
-from .utils import ensure_dir, get_logger
+from .utils import ensure_dir, get_logger, thread_map
 
 LOGGER = get_logger(__name__)
 
@@ -68,10 +68,13 @@ def tokenize_example(example: dict, tokenizer, max_seq_length: int) -> dict | No
 
 
 def tokenize_dataset(examples: list[dict], tokenizer, max_seq_length: int) -> list[dict]:
+    rows = thread_map(
+        lambda example: tokenize_example(example, tokenizer, max_seq_length),
+        examples,
+    )
     tokenized: list[dict] = []
     dropped = 0
-    for example in examples:
-        row = tokenize_example(example, tokenizer, max_seq_length)
+    for row in rows:
         if row is None:
             dropped += 1
             continue
@@ -141,6 +144,8 @@ def train_round(
     model.config.use_cache = False
     tokenizer.padding_side = "right"
 
+    # Tokenisation already ran on a thread pool. DataLoader workers are left
+    # at 0 because this process owns the CUDA context; forked workers deadlock.
     args = TrainingArguments(
         output_dir=str(output_dir),
         num_train_epochs=config.epochs,
@@ -153,6 +158,7 @@ def train_round(
         optim=config.optim,
         report_to="none",
         remove_unused_columns=False,
+        dataloader_pin_memory=torch.cuda.is_available(),
     )
 
     trainer = Trainer(

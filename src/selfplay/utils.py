@@ -1,16 +1,92 @@
-"""Shared helpers: logging, seeding, JSON/JSONL I/O."""
+"""Shared helpers: logging, seeding, JSON/JSONL I/O, CPU parallelism."""
 
 from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import random
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, TypeVar
 
 _LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+
+# Spawn a process pool only when there is enough pure-Python work to pay for it.
+_PROCESS_MAP_MIN = 256
+
+
+def available_cpus() -> int:
+    """Logical CPUs available to this process."""
+    return max(1, os.cpu_count() or 1)
+
+
+def _export_thread_env() -> None:
+    """Point BLAS/OpenMP at every core before native libraries are loaded."""
+    n = str(available_cpus())
+    for key in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        os.environ.setdefault(key, n)
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
+
+
+_export_thread_env()
+
+
+def configure_cpu_parallelism() -> int:
+    """Use every core for CPU work. Safe to call more than once."""
+    n = available_cpus()
+    _export_thread_env()
+    try:
+        import torch
+
+        torch.set_num_threads(n)
+        try:
+            torch.set_num_interop_threads(n)
+        except RuntimeError:
+            # Interop threads can only be set once, and only before parallel work.
+            pass
+    except ImportError:
+        pass
+    return n
+
+
+def thread_map(fn: Callable[[_T], _R], items: Sequence[_T]) -> list[_R]:
+    """Apply ``fn`` in a thread pool, preserving input order.
+
+    Threads cover I/O and tokenizers that release the GIL. One item stays
+    on the caller thread.
+    """
+    seq = list(items)
+    if len(seq) <= 1:
+        return [fn(item) for item in seq]
+    workers = min(available_cpus(), len(seq))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(fn, seq))
+
+
+def process_map(fn: Callable[[_T], _R], items: Sequence[_T]) -> list[_R]:
+    """Apply a picklable ``fn`` across processes, preserving input order.
+
+    Short inputs stay in-process: spawning workers would cost more than the work.
+    """
+    seq = list(items)
+    if len(seq) < _PROCESS_MAP_MIN:
+        return [fn(item) for item in seq]
+    workers = min(available_cpus(), len(seq))
+    # spawn, not fork: the parent may already have initialised CUDA.
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
+        return list(pool.map(fn, seq))
 
 
 def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
@@ -40,6 +116,7 @@ def free_gpu() -> None:
 
 def set_seed(seed: int) -> None:
     """Seed every RNG we touch. torch/numpy are seeded only if importable."""
+    configure_cpu_parallelism()
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     try:

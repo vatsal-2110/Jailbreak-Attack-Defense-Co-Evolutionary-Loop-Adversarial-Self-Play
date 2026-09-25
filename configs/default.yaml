@@ -40,7 +40,7 @@ redteam:
   top_p: 0.95
   max_tokens: 4096
   retries: 4
-  attacks_per_behavior: 3
+  attacks_per_behavior: 5
   history_window: 10
   request_delay_s: 0.0
   load_in_4bit: true
@@ -61,7 +61,7 @@ judge:
   # their own schema, which silently zeroed the original run.
   model_id: cais/HarmBench-Mistral-7b-val-cls
   temperature: 0.0
-  max_tokens: 16
+  max_tokens: 32
   retries: 4
   cases_per_request: 1
   load_in_4bit: true
@@ -98,8 +98,8 @@ data:
   # behaviours cannot be scored, and a safety judge always calls them safe.
   functional_categories:
     - standard
-  num_train_behaviors: 5
-  num_probe_behaviors: 5
+  num_train_behaviors: 20
+  num_probe_behaviors: 20
   behavior_split_seed: 4
   retention_dataset: tatsu-lab/alpaca
   overrefusal_dataset: walledai/XSTest

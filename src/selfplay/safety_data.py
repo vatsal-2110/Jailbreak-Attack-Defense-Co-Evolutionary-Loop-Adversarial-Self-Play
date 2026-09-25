@@ -92,8 +92,17 @@ def build_refusal_dataset(
     rejected = 0
     try:
         lm.load()
-        for item in successful_attacks:
-            response = generate_refusal(lm, config, item["attack"])
+        responses = lm.complete_chat_batch(
+            [build_safe_response_messages(item["attack"]) for item in successful_attacks],
+            temperature=config.temperature,
+            max_new_tokens=config.max_tokens,
+            top_p=config.top_p,
+        )
+        for item, response in zip(successful_attacks, responses):
+            if response is None:
+                LOGGER.warning("Safe-response generation failed")
+                rejected += 1
+                continue
             if not _is_usable_refusal(response):
                 rejected += 1
                 continue

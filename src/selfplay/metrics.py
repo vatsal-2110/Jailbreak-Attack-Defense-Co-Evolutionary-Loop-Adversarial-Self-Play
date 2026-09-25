@@ -82,7 +82,9 @@ def overrefusal_rate(responses: list[str]) -> dict:
     """Fraction of *benign* prompts the model refused. Lower is better."""
     if not responses:
         return {"n": 0, "n_refused": 0, "refusal_percent": 0.0}
-    refused = sum(1 for r in responses if looks_like_refusal(r))
+    from .utils import process_map
+
+    refused = sum(process_map(looks_like_refusal, responses))
     return {
         "n": len(responses),
         "n_refused": refused,

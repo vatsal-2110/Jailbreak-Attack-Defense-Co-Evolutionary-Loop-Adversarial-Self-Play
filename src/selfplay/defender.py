@@ -21,7 +21,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from .config import DefenderConfig, LoraConfigSpec
-from .utils import get_logger
+from .utils import configure_cpu_parallelism, get_logger
 
 LOGGER = get_logger(__name__)
 
@@ -34,6 +34,7 @@ _DTYPES = {
 
 def load_defender(config: DefenderConfig):
     """Load the base defender and its tokenizer."""
+    configure_cpu_parallelism()
     quant_config = None
     if config.load_in_4bit:
         quant_config = BitsAndBytesConfig(

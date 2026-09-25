@@ -248,13 +248,17 @@ class RedTeamGenerator:
     ) -> list[AttackRecord]:
         history = history or {}
         records: list[AttackRecord] = []
+        window = self._config.history_window
         self._lm.load()
         try:
+            # One state per behaviour. Sample k for every behaviour is batched;
+            # sample k+1 still sees that behaviour's own earlier samples, same
+            # as generate_for_behavior.
+            states: list[dict] = []
             for behavior in behaviors:
                 entry = history.get(behavior.behavior_id, {})
                 successes = entry.get("successes", [])
                 failures = entry.get("failures", [])
-
                 LOGGER.info(
                     "Round %d | %s | prior successes=%d failures=%d",
                     round_idx,
@@ -262,28 +266,91 @@ class RedTeamGenerator:
                     len(successes),
                     len(failures),
                 )
+                states.append(
+                    {
+                        "behavior": behavior,
+                        "avoid": successes[-window:] + failures[-window:],
+                        "attacks": [],
+                    }
+                )
 
-                attacks = self.generate_for_behavior(
-                    behavior=behavior,
-                    num_attacks=num_attacks,
-                    previous_successes=successes,
-                    previous_failures=failures,
-                )
-                records.extend(
-                    AttackRecord(
-                        round=round_idx,
-                        behavior_id=behavior.behavior_id,
-                        behavior=behavior.behavior,
-                        functional_category=behavior.functional_category,
-                        attack=attack,
-                        context_string=behavior.context_string,
+            for _slot in range(num_attacks):
+                pending = list(range(len(states)))
+                attempts = [0] * len(states)
+                found: dict[int, str] = {}
+                while pending:
+                    messages = []
+                    for index in pending:
+                        state = states[index]
+                        messages.append(
+                            [
+                                {
+                                    "role": "user",
+                                    "content": build_jailbreak_r1_user_prompt(
+                                        state["behavior"].target_description(),
+                                        state["avoid"][-window:],
+                                    ),
+                                }
+                            ]
+                        )
+                    raws = self._lm.complete_chat_batch(
+                        messages,
+                        temperature=self._config.temperature,
+                        max_new_tokens=self._config.max_tokens,
+                        top_p=self._config.top_p,
                     )
-                    for attack in attacks
-                )
-                if self._config.request_delay_s:
-                    time.sleep(self._config.request_delay_s)
+                    still: list[int] = []
+                    for index, raw in zip(pending, raws):
+                        attempts[index] += 1
+                        behavior_id = states[index]["behavior"].behavior_id
+                        parsed = extract_model_attack(raw) if raw else None
+                        if parsed:
+                            found[index] = parsed
+                            continue
+                        if raw is None:
+                            LOGGER.warning(
+                                "Attack generation failed for %s (attempt %d/%d)",
+                                behavior_id,
+                                attempts[index],
+                                self._config.retries,
+                            )
+                        else:
+                            LOGGER.warning(
+                                "Could not parse an attack for %s (attempt %d/%d); first 200 chars: %r",
+                                behavior_id,
+                                attempts[index],
+                                self._config.retries,
+                                raw[:200],
+                            )
+                        if attempts[index] < self._config.retries:
+                            still.append(index)
+                    pending = still
+
+                for index, state in enumerate(states):
+                    attack = found.get(index)
+                    if not attack:
+                        continue
+                    state["attacks"].append(attack)
+                    state["avoid"].append(attack)
+
+            if self._config.request_delay_s and behaviors:
+                time.sleep(self._config.request_delay_s * len(behaviors))
         finally:
             self.unload()
+
+        for state in states:
+            behavior = state["behavior"]
+            records.extend(
+                AttackRecord(
+                    round=round_idx,
+                    behavior_id=behavior.behavior_id,
+                    behavior=behavior.behavior,
+                    functional_category=behavior.functional_category,
+                    attack=attack,
+                    context_string=behavior.context_string,
+                )
+                for attack in state["attacks"]
+            )
 
         expected = len(behaviors) * num_attacks
         LOGGER.info(
