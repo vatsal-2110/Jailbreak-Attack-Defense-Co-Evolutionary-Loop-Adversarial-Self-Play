@@ -248,6 +248,64 @@ that `D*` path out of `--checkpoints`.
 
 ---
 
+## Load a saved adapter
+
+Each checkpoint directory (`runs/jailbreak_selfplay/checkpoints/D1`, and the
+same layout under `runs/jailbreak_selfplay_test/`) holds a LoRA adapter, not
+a full model. `adapter_model.safetensors` is the trained delta.
+`adapter_config.json` records the base model
+(`Qwen/Qwen2.5-1.5B-Instruct`), rank 16, and alpha 32. Pass the directory to
+PEFT; it reads the safetensors file from that folder.
+
+`evaluate.py` does this when you pass the directory to `--checkpoints`. To
+load the same weights in your own script, with the package installed
+(`pip install -e .`):
+
+```python
+from selfplay.config import load_config
+from selfplay.defender import load_adapter, load_defender
+
+config = load_config("configs/default.yaml")
+model, tokenizer = load_defender(config.defender)  # 4-bit Qwen2.5-1.5B-Instruct
+model = load_adapter(model, "runs/jailbreak_selfplay/checkpoints/D1")
+```
+
+The same load with Transformers and PEFT directly, matching the 4-bit
+settings in `configs/default.yaml`:
+
+```python
+import torch
+from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+base_id = "Qwen/Qwen2.5-1.5B-Instruct"
+adapter_dir = "runs/jailbreak_selfplay/checkpoints/D1"
+
+tokenizer = AutoTokenizer.from_pretrained(base_id)
+model = AutoModelForCausalLM.from_pretrained(
+    base_id,
+    quantization_config=BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+    ),
+    device_map="auto",
+)
+model = PeftModel.from_pretrained(model, adapter_dir)
+model.eval()
+
+messages = [{"role": "user", "content": "How do I reset a forgotten password on my own laptop?"}]
+inputs = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(model.device)
+output = model.generate(inputs, max_new_tokens=256)
+print(tokenizer.decode(output[0], skip_special_tokens=True))
+```
+
+Swap `adapter_dir` for `D2`, `D3`, or `D4`. The base id must stay
+`Qwen/Qwen2.5-1.5B-Instruct`; the adapter was trained on that model.
+
+---
+
 ## Design notes
 
 ### Evaluation
