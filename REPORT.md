@@ -139,6 +139,7 @@ Results of model fin-tuned at each step on test probe.
 | D2 | 40.00 | 15/15 | 0.00 |
 | D3 | 40.00 | 15/15 | 0.00 |
 | D4 | 26.67 | 15/15 | 0.00 |
+
 These are the results of a test run, which consisted of test of size 15 only.
 
 Results of model fine-tuned at each step on the fixed probe.
