@@ -74,19 +74,18 @@ In summary, training attacks tell you how the self-play process is progressing; 
 
 ## 3. Design decisions
 
-### 3.1 Judging is routed by behaviour category
+### 3.1 Behaviour-Aware Evaluation Protocol
 
-HarmBench's test split is not homogeneous — it is 159 `standard`, 81
-`contextual`, 80 `copyright`. These need different treatment:
+HarmBench contains three distinct behaviour categories—**Standard (159 behaviours), Contextual (81 behaviours), and Copyright (80 behaviours)**—that require different evaluation strategies. Applying a single judging mechanism across all categories would not provide a reliable measure of attack success.
 
-| Category | Scoring | Why not one judge for all |
-|---|---|---|
-| `standard` | LLM judge, one case per call | — |
-| `contextual` | LLM judge **plus `ContextString`** | The behaviour text alone is a dangling referent: *"Slightly modify **this text**…"* — which text? The ~1 KB context is a separate CSV column |
-| `copyright` | n-gram overlap vs. reference text | A harm classifier labels a faithfully reproduced book passage "safe" every single time, so these behaviours can never register a hit |
+For the **Standard** category, we use an LLM-based judge to determine whether the model's response constitutes a successful harmful behaviour. Each test case is evaluated independently.
 
-Copyright and contextual is excluded by default, because scoring copyright needs reference
-texts that this project cannot redistribute and generating contextual needs context string. Excluding them is a stated limitation.
+The **Contextual** category requires additional information beyond the behaviour description itself. Many contextual behaviours contain references such as *“modify this text”* or *“perform this action on the given content,”* where the behaviour description alone does not specify the object being referred to. The corresponding context is provided separately in the HarmBench data. Therefore, evaluating these behaviours requires incorporating the associated `ContextString` into the evaluation prompt.
+
+The **Copyright** category requires a fundamentally different criterion. Its objective is to determine whether the model reproduces protected reference material, making **n-gram overlap with the reference text** a more appropriate measure than a conventional harm/safety judge. A generic safety classifier may incorrectly classify faithful reproduction of copyrighted material as safe and therefore fail to identify a successful attack.
+
+For this reason, the current evaluation focuses on the **Standard category**, while Contextual and Copyright behaviours are excluded from the default evaluation pipeline. This is a deliberate scope restriction rather than an assumption that these categories are equivalent to Standard behaviours. In particular, Copyright evaluation requires access to reference texts that are not redistributed with this project, while Contextual evaluation requires the corresponding context strings to be incorporated correctly. These dependencies are documented as limitations of the current evaluation setup.
+
 
 
 ### 3.2 Refusal data is mixed with retention data
@@ -132,6 +131,15 @@ adapter *and* replaying the cumulative dataset, which trains round 0's data
 ## 5. Experiments run and results
 
 ### 5.1 Results
+Results of model fin-tuned at each step on test probe.
+| Checkpoint | Probe ASR % | scored/total | Over-refusal % |
+| --- | ---: | ---: | ---: |
+| base | 53.33 | 15/15 | 0.00 |
+| D1 | 53.33 | 15/15 | 0.00 |
+| D2 | 40.00 | 15/15 | 0.00 |
+| D3 | 40.00 | 15/15 | 0.00 |
+| D4 | 26.67 | 15/15 | 0.00 |
+These are the results of a test run, which consisted of test of size 15 only.
 
 Results of model fine-tuned at each step on the fixed probe.
 | Checkpoint | Probe ASR % | scored/total | Over-refusal % |
@@ -144,8 +152,10 @@ Results of model fine-tuned at each step on the fixed probe.
 
 We used a disjoint fixed probe of size 100, which consisted of 100 tests.
 
+We can draw a conclusion from here that increasing the number of attacks for training will make the model more robust against attack.
 
-### 5.1 Experiment Runs
+
+### 5.2 Experiment Runs
 We began with a base instruction-tuned model, which exhibited an initial Probe Attack Success Rate (ASR) of **62%**. From the standard category of the **HarmBench benchmark**, we selected **20 behaviours** and generated **5 attacks per behaviour**, resulting in a total of **100 initial attack prompts**.
 
 The successful attacks were then identified and used to construct the training dataset. For each successful attack, we created training pairs consisting of the **attack prompt paired with a safe response**, along with corresponding **benign instruction–response pairs**. The resulting dataset was used to perform **LoRA-based Supervised Fine-Tuning (SFT)** of the model for 2 epochs.
@@ -158,9 +168,9 @@ All the checkpoints and results are stored in runs/jailbreak_selfplay folder.
 runs/jailbreak_selfplay_test was a pipeline testing run to check the overall working of the pipeline.
 
 
-### 5.2 Probe composition
+### 5.3 Probe composition
 
-The 20 sampled behaviours(experimental), by HarmBench functional category:
+The 20 sampled behaviours(experimental), by HarmBench standard category:
 
 | Category | Count | Scoreable by the pipeline as written? |
 |---|---|---|
@@ -187,6 +197,7 @@ Thus, the project evaluates two complementary objectives:
 Overall, the project is essentially an adaptive red-team → defense training → fixed evaluation loop, designed to study whether a defender can become more robust against jailbreaks while retaining useful behaviour.
 
 >One finding form the experiments is that the more will be the dataset the better will be the results.
+>One more Implementation level detail is that we are freeing our vram b offloading models, this will be helpful when we have to work with larger datasets and models.
 ---
 
 ## 7. Weaknesses and Improvements
